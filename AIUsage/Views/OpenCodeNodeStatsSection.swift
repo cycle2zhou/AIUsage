@@ -29,7 +29,7 @@ struct OpenCodeOverviewStrip: View {
             cell(
                 icon: "checkmark.circle.fill",
                 title: L("Active", "已激活"),
-                value: store.activeNodeId != nil ? "1" : "0",
+                value: "\(store.activeNodeIds.count)",
                 tint: .green
             )
             cell(

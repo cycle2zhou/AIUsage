@@ -211,7 +211,7 @@ extension MenuBarView {
         let globalEnabled = manager.isEnabled
         let globalNodes = manager.availableNodes()
         let accent = OpenCodeManagementView.brand
-        let activeId = openCodeStore.activeNodeId
+        let activeId = openCodeStore.activeNodeIds.last
 
         var sections: [MenuBarTrackPanelSection] = []
         var onDeactivate: (() -> Void)?
@@ -220,18 +220,18 @@ extension MenuBarView {
             sections = [hotSwapSection(manager: manager, nodes: globalNodes)]
         } else {
             let rows = openCodeStore.nodes.map { node -> MenuBarTrackPanelRow in
-                let isActive = openCodeStore.activeNodeId == node.id
+                let isActive = openCodeStore.activeNodeIds.contains(node.id)
                 return MenuBarTrackPanelRow(
                     id: node.id, name: node.displayName, isActive: isActive,
                     isDisabled: !node.isComplete
                 ) {
-                    if isActive { try? openCodeStore.deactivate() }
+                    if isActive { try? openCodeStore.deactivate(node) }
                     else { Task { try? await openCodeStore.activate(node) } }
                     closePanel()
                 }
             }
             sections = [MenuBarTrackPanelSection(id: "nodes", rows: rows)]
-            if activeId != nil {
+            if !openCodeStore.activeNodeIds.isEmpty {
                 onDeactivate = { try? openCodeStore.deactivate(); closePanel() }
             }
         }

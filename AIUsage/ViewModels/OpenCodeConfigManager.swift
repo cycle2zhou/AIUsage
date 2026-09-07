@@ -289,34 +289,58 @@ final class OpenCodeConfigManager {
     /// - Parameter commonSettings: 通用配置片段（按节点合并策略由调用方决定传入与否）。
     ///   合并顺序：用户原文 ← 通用配置 ← 受管块（受管键始终最终生效）。
     func activate(node: OpenCodeNode, baseURLOverride: String? = nil, commonSettings: [String: Any]? = nil) throws {
-        guard let defaultModel = node.effectiveDefaultModel, node.isComplete else {
-            throw OpenCodeConfigError.nodeIncomplete
+        try activate(nodes: [node], defaultNodeId: node.id) { _ in commonSettings }
+    }
+
+    /// 多节点激活（issue #66）：把多个节点的受管 provider 块同时注入 opencode 配置，顶层 model
+    /// 指向 defaultNodeId（最近激活的节点）。激活/停用单节点后都由调用方全量重写一次。
+    /// - Parameter commonSettingsFor: 每节点的通用配置片段（按节点合并策略，nil 表示不合并）。
+    func activate(
+        nodes: [OpenCodeNode],
+        defaultNodeId: String,
+        commonSettingsFor: (OpenCodeNode) -> [String: Any]?
+    ) throws {
+        let defaultNode = nodes.first(where: { $0.id == defaultNodeId }) ?? nodes.last
+        guard let defaultNode else { return }
+        for node in nodes {
+            guard node.isComplete, node.effectiveDefaultModel != nil else {
+                throw OpenCodeConfigError.nodeIncomplete
+            }
         }
         let hadSession = session != nil
         do {
             let pristine = try establishBackupAndLoadPristine()
             try withManagedFilesTransaction {
-                // 密钥与配置属于同一次事务。代理模式下清掉残留直连凭据，避免 auth.json 覆盖 client key。
-                let directAPIKey = baseURLOverride == nil ? node.apiKey.nilIfBlank : nil
-                let credentials = directAPIKey.map { [node.managedProviderId: $0] } ?? [:]
+                // 密钥与配置属于同一次事务。所有直连节点的 key 写入 auth.json（多 key 字典），
+                // 代理节点的真实 key 留在代理进程、client key 内联进各自受管块。
+                var credentials: [String: String] = [:]
+                for node in nodes where !node.proxyEnabled {
+                    if let key = node.apiKey.nilIfBlank {
+                        credentials[node.managedProviderId] = key
+                    }
+                }
                 let credentialsStored = authStore.syncManagedCredentials(credentials)
                 let keyPlacement: ManagedAPIKeyPlacement = credentialsStored ? .externalAuthFile : .inlineOptions
                 if !credentialsStored {
                     openCodeConfigLog.error("auth.json write failed, falling back to inline apiKey in opencode config")
                 }
 
-                let root = injectManagedEntries(
-                    into: mergedBase(pristine: pristine, commonSettings: commonSettings),
-                    node: node,
-                    defaultModel: defaultModel,
-                    baseURLOverride: baseURLOverride,
-                    keyPlacement: keyPlacement
-                )
+                // 通用配置只合并一次（按默认节点策略），provider 块每个节点注入一个。
+                var root = mergedBase(pristine: pristine, commonSettings: commonSettingsFor(defaultNode))
+                for node in nodes {
+                    root = injectNodeBlock(
+                        into: root,
+                        node: node,
+                        baseURLOverride: node.proxyEnabled ? node.proxyLocalBaseURL : nil,
+                        keyPlacement: keyPlacement
+                    )
+                }
+                root["model"] = "\(defaultNode.managedProviderId)/\(defaultNode.effectiveDefaultModel!)"
 
                 try writeManagedRoot(root)
                 try verifyEffectiveManagedProjection(target: root)
                 try recordManagedHash()
-                openCodeConfigLog.info("opencode config managed provider injected (provider=\(node.managedProviderId, privacy: .public), models=\(node.models.count), jsonc=\(self.usesJSONC, privacy: .public), keyInAuthFile=\(keyPlacement == .externalAuthFile, privacy: .public))")
+                openCodeConfigLog.info("opencode config managed providers injected (nodes=\(nodes.count, privacy: .public), default=\(defaultNode.managedProviderId, privacy: .public), jsonc=\(self.usesJSONC, privacy: .public), keyInAuthFile=\(keyPlacement == .externalAuthFile, privacy: .public))")
             }
         } catch {
             if !hadSession { discardSessionFiles() }
@@ -640,13 +664,12 @@ final class OpenCodeConfigManager {
         ]
     }
 
-    /// 把受管块注入干净原文：provider[managedId] + 顶层 model 指向（含 $schema 补齐）。
-    private func injectManagedEntries(
+    /// 注入单个节点的 provider 块（只动 provider[managedId] + 补齐 $schema，不设顶层 model）。
+    private func injectNodeBlock(
         into cleanRoot: [String: Any],
         node: OpenCodeNode,
-        defaultModel: String,
         baseURLOverride: String?,
-        keyPlacement: ManagedAPIKeyPlacement = .externalAuthFile
+        keyPlacement: ManagedAPIKeyPlacement
     ) -> [String: Any] {
         var root = cleanRoot
         if root["$schema"] == nil {
@@ -660,7 +683,25 @@ final class OpenCodeConfigManager {
             keyPlacement: keyPlacement
         )
         root["provider"] = provider
-        root["model"] = "\(managedId)/\(defaultModel)"
+        return root
+    }
+
+    /// 把受管块注入干净原文：provider[managedId] + 顶层 model 指向（含 $schema 补齐）。
+    /// 单节点预览/启动命令导出仍用此入口；多节点激活走 injectNodeBlock 逐块注入。
+    private func injectManagedEntries(
+        into cleanRoot: [String: Any],
+        node: OpenCodeNode,
+        defaultModel: String,
+        baseURLOverride: String?,
+        keyPlacement: ManagedAPIKeyPlacement = .externalAuthFile
+    ) -> [String: Any] {
+        var root = injectNodeBlock(
+            into: cleanRoot,
+            node: node,
+            baseURLOverride: baseURLOverride,
+            keyPlacement: keyPlacement
+        )
+        root["model"] = "\(node.managedProviderId)/\(defaultModel)"
         return root
     }
 

@@ -601,11 +601,11 @@ final class GlobalProxyManager: ObservableObject {
         }
         let previousConfig = config
 
-        // 与每节点激活互斥：接管 CLI 配置前先停掉本轨当前激活的节点（干净交接）。
-        let activePerNode = adapter.currentPerNodeActiveId()
-        if let activePerNode {
-            await adapter.deactivatePerNode(activePerNode)
-            guard adapter.currentPerNodeActiveId() != activePerNode else {
+        // 与每节点激活互斥：接管 CLI 配置前先停掉本轨当前激活的所有节点（干净交接）。
+        let activePerNodeIds = adapter.currentPerNodeActiveIds()
+        if !activePerNodeIds.isEmpty {
+            await adapter.deactivatePerNode(activePerNodeIds)
+            guard adapter.currentPerNodeActiveIds().isEmpty else {
                 operationError = AppSettings.shared.t(
                     "Could not release the previous product route. Try again before starting the Gateway.",
                     "无法释放之前的应用路由，请重试后再启动 Gateway。"
@@ -680,8 +680,8 @@ final class GlobalProxyManager: ObservableObject {
             }
             if !wasCancelled, previousConfig.isEnabled == false { runtime.stop() }
             try? adapter.restoreCLIConfig()
-            if let activePerNode {
-                await adapter.activatePerNode(activePerNode)
+            if !activePerNodeIds.isEmpty {
+                await adapter.activatePerNode(activePerNodeIds)
             }
             // Cancellation is an internal hand-off, not a user-facing failure,
             // but it still needs the same direct-route rollback as any error.
