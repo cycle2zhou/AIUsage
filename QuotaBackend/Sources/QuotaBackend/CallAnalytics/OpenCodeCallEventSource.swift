@@ -25,7 +25,7 @@ struct OpenCodeCallEventSource {
         "list", "webfetch", "patch", "task", "question", "todowrite", "todoread", "invalid"
     ]
 
-    func collect(cutoff: Date?) -> (entries: [CallAnalyticsEntry], status: CallSourceStatus) {
+    func collect(cutoff: Date?) -> (entries: [OpenCodeCallLedgerEntry], status: CallSourceStatus) {
         let clock = CallAnalyticsClock(timeZone: timeZone)
         guard let dataDirectory = resolveDataDirectory() else {
             return ([], CallSourceStatus(source: .opencode, available: false, eventCount: 0, filesScanned: 0, errorCode: nil))
@@ -41,10 +41,12 @@ struct OpenCodeCallEventSource {
         defer { cleanupDatabaseSnapshot(snapshotPath) }
 
         let sinceMillis: Int64? = cutoff.map { Int64($0.timeIntervalSince1970 * 1000) }
-        var accumulator = CallEventAccumulator()
+        var entries: [OpenCodeCallLedgerEntry] = []
         do {
-            try forEachToolPart(databasePath: snapshotPath, sinceMillis: sinceMillis) { millis, data in
-                parsePart(data, millis: millis, clock: clock, into: &accumulator)
+            try forEachToolPart(databasePath: snapshotPath, sinceMillis: sinceMillis) { partId, millis, data in
+                if let entry = parsePart(partId: partId, data, millis: millis, clock: clock) {
+                    entries.append(entry)
+                }
             }
         } catch {
             let code = (error as? ProviderError)?.code ?? "db_query_failed"
@@ -54,38 +56,38 @@ struct OpenCodeCallEventSource {
         let status = CallSourceStatus(
             source: .opencode,
             available: true,
-            eventCount: accumulator.eventCount,
+            eventCount: entries.count,
             filesScanned: 1,
             errorCode: nil
         )
-        return (accumulator.entries(), status)
+        return (entries, status)
     }
 
     // MARK: - Parsing
 
     private func parsePart(
+        partId: String,
         _ data: Data,
         millis: Int64,
-        clock: CallAnalyticsClock,
-        into accumulator: inout CallEventAccumulator
-    ) {
+        clock: CallAnalyticsClock
+    ) -> OpenCodeCallLedgerEntry? {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               (object["type"] as? String) == "tool",
               let tool = (object["tool"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !tool.isEmpty else {
-            return
+            return nil
         }
         let dayKey = clock.dayKey(fromMillis: millis)
         let state = object["state"] as? [String: Any]
-        classify(tool: tool, state: state, dayKey: dayKey, into: &accumulator)
+        return classify(partId: partId, tool: tool, state: state, dayKey: dayKey)
     }
 
     private func classify(
+        partId: String,
         tool: String,
         state: [String: Any]?,
-        dayKey: String,
-        into accumulator: inout CallEventAccumulator
-    ) {
+        dayKey: String
+    ) -> OpenCodeCallLedgerEntry {
         let lower = tool.lowercased()
         // OpenCode 每条 tool part 自带 status 与 time，故成功率/耗时对所有类别（MCP/技能/工具）通用。
         let success = Self.outcome(from: state)
@@ -95,30 +97,25 @@ struct OpenCodeCallEventSource {
             let input = state?["input"] as? [String: Any]
             let raw = (input?["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let skillName = raw.isEmpty ? "(unknown)" : raw
-            accumulator.add(source: .opencode, kind: .skill, name: skillName, server: nil, dayKey: dayKey,
-                            success: success, durationMs: durationMs)
-            return
+            return OpenCodeCallLedgerEntry(partId: partId, dayKey: dayKey, kind: .skill, name: skillName, server: nil, success: success, durationMs: durationMs)
         }
 
         if Self.builtinTools.contains(lower) {
             let kind: CallKind = lower == "webfetch" ? .webSearch : .builtin
-            accumulator.add(source: .opencode, kind: kind, name: tool, server: nil, dayKey: dayKey,
-                            success: success, durationMs: durationMs)
-            return
+            return OpenCodeCallLedgerEntry(partId: partId, dayKey: dayKey, kind: kind, name: tool, server: nil, success: success, durationMs: durationMs)
         }
 
         // 优先用已装 server 名做最长前缀匹配（server 名本身含 `_`/`-` 时切分才准），匹配不到再回退。
         if let match = matchKnownServer(tool: tool) {
-            accumulator.add(
-                source: .opencode,
+            return OpenCodeCallLedgerEntry(
+                partId: partId,
+                dayKey: dayKey,
                 kind: .mcp,
                 name: CallAnalyticsNaming.mcpDisplayName(server: match.server, tool: match.tool),
                 server: match.server,
-                dayKey: dayKey,
                 success: success,
                 durationMs: durationMs
             )
-            return
         }
 
         // 回退启发式：OpenCode 把 MCP 工具命名为 `<server>_<tool>`；非内置且含下划线者归为 MCP。
@@ -126,21 +123,19 @@ struct OpenCodeCallEventSource {
             let server = String(tool[tool.startIndex..<sep])
             let toolName = String(tool[tool.index(after: sep)...])
             if !server.isEmpty, !toolName.isEmpty {
-                accumulator.add(
-                    source: .opencode,
+                return OpenCodeCallLedgerEntry(
+                    partId: partId,
+                    dayKey: dayKey,
                     kind: .mcp,
                     name: CallAnalyticsNaming.mcpDisplayName(server: server, tool: toolName),
                     server: server,
-                    dayKey: dayKey,
                     success: success,
                     durationMs: durationMs
                 )
-                return
             }
         }
 
-        accumulator.add(source: .opencode, kind: .other, name: tool, server: nil, dayKey: dayKey,
-                        success: success, durationMs: durationMs)
+        return OpenCodeCallLedgerEntry(partId: partId, dayKey: dayKey, kind: .other, name: tool, server: nil, success: success, durationMs: durationMs)
     }
 
     /// 从 part.state 判定成功/失败：completed→成功，error→失败，其余（pending/running 等）→nil（不计入分母）。
@@ -217,7 +212,7 @@ struct OpenCodeCallEventSource {
     private func forEachToolPart(
         databasePath: String,
         sinceMillis: Int64?,
-        onRow: (Int64, Data) -> Void
+        onRow: (String, Int64, Data) -> Void
     ) throws {
         var db: OpaquePointer?
         guard sqlite3_open_v2(databasePath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -227,7 +222,7 @@ struct OpenCodeCallEventSource {
         }
         defer { sqlite3_close(db) }
 
-        var sql = "SELECT time_created, data FROM part WHERE data LIKE '%\"type\":\"tool\"%'"
+        var sql = "SELECT id, time_created, data FROM part WHERE data LIKE '%\"type\":\"tool\"%'"
         if sinceMillis != nil {
             sql += " AND time_created >= ?"
         }
@@ -250,9 +245,11 @@ struct OpenCodeCallEventSource {
                 let message = String(cString: sqlite3_errmsg(db))
                 throw ProviderError("db_step_failed", SensitiveDataRedactor.redactPaths(in: message))
             }
-            guard let dataCString = sqlite3_column_text(statement, 1) else { continue }
-            let millis = sqlite3_column_int64(statement, 0)
-            onRow(millis, Data(String(cString: dataCString).utf8))
+            guard let idCString = sqlite3_column_text(statement, 0) else { continue }
+            let partId = String(cString: idCString)
+            let millis = sqlite3_column_int64(statement, 1)
+            guard let dataCString = sqlite3_column_text(statement, 2) else { continue }
+            onRow(partId, millis, Data(String(cString: dataCString).utf8))
         }
         openCodeCallLog.debug("OpenCode call-analytics scanned part rows")
     }
