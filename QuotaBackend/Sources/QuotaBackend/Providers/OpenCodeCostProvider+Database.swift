@@ -13,6 +13,7 @@ extension OpenCodeCostProvider {
 
     /// message 表的一行原始数据（data 为 OpenCode 的消息 JSON）。
     struct MessageRow: Sendable {
+        let messageId: String
         let sessionId: String
         let timeCreatedMillis: Int64
         let data: Data
@@ -28,7 +29,7 @@ extension OpenCodeCostProvider {
         }
         defer { sqlite3_close(db) }
 
-        var sql = "SELECT session_id, time_created, data FROM message"
+        var sql = "SELECT id, session_id, time_created, data FROM message"
         if sinceMillis != nil {
             sql += " WHERE time_created >= ?"
         }
@@ -53,13 +54,15 @@ extension OpenCodeCostProvider {
                 throw ProviderError("db_step_failed", SensitiveDataRedactor.redactPaths(in: message))
             }
 
-            guard let sessionCString = sqlite3_column_text(statement, 0),
-                  let dataCString = sqlite3_column_text(statement, 2) else {
+            guard let idCString = sqlite3_column_text(statement, 0),
+                  let sessionCString = sqlite3_column_text(statement, 1),
+                  let dataCString = sqlite3_column_text(statement, 3) else {
                 continue
             }
             rows.append(MessageRow(
+                messageId: String(cString: idCString),
                 sessionId: String(cString: sessionCString),
-                timeCreatedMillis: sqlite3_column_int64(statement, 1),
+                timeCreatedMillis: sqlite3_column_int64(statement, 2),
                 data: Data(String(cString: dataCString).utf8)
             ))
         }

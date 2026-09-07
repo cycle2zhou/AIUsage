@@ -21,6 +21,8 @@ public struct OpenCodeCostProvider: ProviderFetcher {
 
     /// 永久每日归档（每个 home 一张，按 homeDirectory 区分以隔离测试 / 多配置）。
     static let archive = OpenCodeUsageArchiveStore()
+    /// 独立明细账本（message 级，按 message.id 去重增量），issue #67 的持久真相源。
+    static let ledger = OpenCodeLedgerStore()
     static let defaultScanDays = 30
 
     public init(
@@ -37,31 +39,35 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         let now = Date()
         let todayKey = dayKey(now)
 
-        // 首次（归档从未完成全量）触发全量扫描以冻结所有历史日；之后只扫窗口。
-        let shouldImportFullHistory = await Self.archive.consumeFullHistoryImportRequest(homeDirectory: homeDirectory)
+        // 首次（账本从未完成全量）触发全量扫描以回填账本全部明细；之后只扫窗口。
+        let shouldImportFullHistory = await Self.ledger.consumeFullHistoryImportRequest(homeDirectory: homeDirectory)
         let sinceMillis: Int64? = shouldImportFullHistory ? nil : scanWindowStartMillis(now: now)
 
-        // 1) 读库（OpenCode 未安装/版本过旧时跳过：冻结归档可能仍有历史数据）。
+        // 1) 读库明细 → 账本合并（upsert 增量；OpenCode 未安装/版本过旧时跳过，账本仍有历史）。
         let dataDirectory = resolveDataDirectory()
-        var sessionIds = Set<String>()
-        var computed: [String: CodexAggregateBucket] = [:]
         if let dataDirectory {
             let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
             defer { cleanupDatabaseSnapshot(snapshotPath) }
             let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
             let decoder = JSONDecoder()
-            var rows: [CodexRow] = []
-            rows.reserveCapacity(messageRows.count)
+            var entries: [OpenCodeLedgerEntry] = []
+            entries.reserveCapacity(messageRows.count)
             for messageRow in messageRows {
-                guard let row = parseMessageRow(messageRow, decoder: decoder) else { continue }
-                rows.append(row)
-                sessionIds.insert(messageRow.sessionId)
+                guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
+                entries.append(entry)
             }
-            computed = buildDays(rows: rows)
+            await Self.ledger.merge(
+                homeDirectory: homeDirectory,
+                newEntries: entries,
+                completedFullHistory: shouldImportFullHistory
+            )
         }
         relieveMallocPressure()
 
-        // 2) 冻结归档：昨日前首写冻结、今天覆盖重算；删除本地库后历史不丢。
+        // 2) 账本聚合 → 冻结归档：昨日前首写冻结、今天从账本累积覆盖（删除会话后账本不删，统计不丢）。
+        let ledgerEntries = await Self.ledger.allEntries(homeDirectory: homeDirectory)
+        let sessionIds = Set(ledgerEntries.map { $0.sessionId })
+        let computed = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
         let dbDays = await Self.archive.freeze(
             homeDirectory: homeDirectory,
             computed: computed,
