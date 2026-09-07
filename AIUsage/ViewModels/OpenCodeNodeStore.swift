@@ -384,10 +384,16 @@ final class OpenCodeNodeStore: ObservableObject {
     private func restoreProxyIfNeeded() {
         // 与 Claude/Codex 一致：受「启动时自动恢复代理」设置控制。关闭时不接管，
         // 并还原受管配置层（避免它仍指向不会被拉起的本地端口）。
+        // 仅代理节点依赖本地进程：进程未自动恢复时其受管块会指向不存在的端口，需停用还原；
+        // 直连节点配置持久、无需恢复，重启后应保持激活。
         guard AppSettings.shared.proxyAutoRestoreOnLaunch else {
-            if !activeNodeIds.isEmpty {
-                do { try deactivate() } catch {
-                    openCodeStoreLog.error("Failed to deactivate OpenCode node while auto-restore disabled: \(SensitiveDataRedactor.redactedMessage(for: error), privacy: .public)")
+            let proxyActiveIds = activeNodeIds.filter { id in
+                nodes.first(where: { $0.id == id })?.proxyEnabled == true
+            }
+            for id in proxyActiveIds {
+                guard let node = nodes.first(where: { $0.id == id }) else { continue }
+                do { try deactivate(node) } catch {
+                    openCodeStoreLog.error("Failed to deactivate OpenCode proxy node while auto-restore disabled: \(SensitiveDataRedactor.redactedMessage(for: error), privacy: .public)")
                 }
             }
             return
