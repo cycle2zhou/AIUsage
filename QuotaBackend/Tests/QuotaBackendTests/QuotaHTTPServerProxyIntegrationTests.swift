@@ -26,6 +26,69 @@ final class QuotaHTTPServerProxyIntegrationTests: XCTestCase {
         XCTAssertEqual(json["instanceToken"] as? String, "test-instance-token")
     }
 
+    func testGlobalProxyPublishesOnlyConfiguredClientModelAcrossHotSwitches() async throws {
+        let clientModel = "My-LLM"
+        let codexConfig = CodexProxyConfiguration(
+            enabled: true,
+            upstreamBaseURL: "http://127.0.0.1:9",
+            openAIUpstreamAPI: .responses,
+            upstreamAPIKey: "old-key",
+            expectedClientKey: "client-key",
+            upstreamModel: "old-real-model",
+            publicModel: clientModel
+        )
+        let codexServer = QuotaHTTPServer(
+            host: "127.0.0.1",
+            port: 4319,
+            codexConfig: codexConfig
+        )
+        XCTAssertTrue(codexServer.applyCodexUpstream(.init(
+            nodeId: "new-node",
+            baseURL: "http://127.0.0.1:10",
+            apiKey: "new-key",
+            model: "new-real-model",
+            maxOutputTokens: nil
+        )))
+        let codexResult = try await XCTUnwrap(codexServer.codexProxyService)
+            .passthroughModels(inboundHeaders: [:])
+        let codexJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: codexResult.data) as? [String: Any]
+        )
+        let codexModels = try XCTUnwrap(codexJSON["data"] as? [[String: Any]])
+        XCTAssertEqual(codexModels.map { $0["id"] as? String }, [clientModel])
+        XCTAssertEqual(codexServer.codexConfig?.upstreamModel, "new-real-model")
+        XCTAssertEqual(codexServer.codexConfig?.publicModel, clientModel)
+
+        let openCodeConfig = OpenCodeProxyConfiguration(
+            enabled: true,
+            upstreamBaseURL: "http://127.0.0.1:11",
+            upstreamAPIKey: "old-key",
+            expectedClientKey: "client-key",
+            forcedModel: "old-real-model",
+            publicModel: clientModel
+        )
+        let openCodeServer = QuotaHTTPServer(
+            host: "127.0.0.1",
+            port: 4321,
+            openCodeConfig: openCodeConfig
+        )
+        XCTAssertTrue(openCodeServer.applyOpenCodeUpstream(.init(
+            nodeId: "new-node",
+            baseURL: "http://127.0.0.1:12",
+            apiKey: "new-key",
+            model: "new-real-model"
+        )))
+        let openCodeResult = try await XCTUnwrap(openCodeServer.openCodeProxyService)
+            .passthroughModels(inboundHeaders: [:])
+        let openCodeJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: openCodeResult.data) as? [String: Any]
+        )
+        let openCodeModels = try XCTUnwrap(openCodeJSON["data"] as? [[String: Any]])
+        XCTAssertEqual(openCodeModels.map { $0["id"] as? String }, [clientModel])
+        XCTAssertEqual(openCodeServer.openCodeConfig?.forcedModel, "new-real-model")
+        XCTAssertEqual(openCodeServer.openCodeConfig?.publicModel, clientModel)
+    }
+
     func testScienceModelsEndpointUsesActiveCatalogAndRequiresClientKey() async throws {
         let proxyPort = try findFreePort()
         let config = ClaudeProxyConfiguration(

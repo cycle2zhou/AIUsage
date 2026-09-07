@@ -176,6 +176,8 @@ public final class QuotaHTTPServer: @unchecked Sendable {
     let globalProxyAdminKey: String?
     /// 全局模式下对客户端固定不变的 client key（热切换只换上游，绝不换 client key，保证 CLI 配置无需重写）。
     let fixedCodexClientKey: String?
+    /// Codex 全局代理对客户端固定发布的唯一模型名（通常为 LLM）。
+    let fixedCodexPublicModel: String?
     /// Claude 全局模式下对客户端固定不变的 client key（写入 settings.json 的 ANTHROPIC_AUTH_TOKEN）。
     let fixedClaudeClientKey: String?
     /// Desktop keeps its own local key so disconnecting/reconfiguring the app
@@ -183,6 +185,8 @@ public final class QuotaHTTPServer: @unchecked Sendable {
     let fixedClaudeDesktopClientKey: String?
     /// OpenCode 全局模式下对客户端固定不变的 client key（写入 opencode.json 受管块的 apiKey 占位）。
     let fixedOpenCodeClientKey: String?
+    /// OpenCode 全局代理对客户端固定发布的唯一模型名（通常为 LLM）。
+    let fixedOpenCodePublicModel: String?
 
     /// 原子热替换 Codex 上游：用新上游构造 service，连同 config / activeNodeId 一次性换入（单次加锁），
     /// 保证并发请求要么看到旧三态、要么看到新三态，不会读到半新半旧的组合。client key 恒用固定值。
@@ -197,6 +201,7 @@ public final class QuotaHTTPServer: @unchecked Sendable {
             upstreamAPIKey: update.apiKey,
             expectedClientKey: fixedCodexClientKey,
             upstreamModel: update.model,
+            publicModel: fixedCodexPublicModel,
             maxOutputTokens: update.maxOutputTokens
         )
         guard let newService = try? CodexProxyService(configuration: newConfig) else {
@@ -272,7 +277,8 @@ public final class QuotaHTTPServer: @unchecked Sendable {
             upstreamBaseURL: update.baseURL,
             upstreamAPIKey: update.apiKey,
             expectedClientKey: fixedOpenCodeClientKey,
-            forcedModel: update.model
+            forcedModel: update.model,
+            publicModel: fixedOpenCodePublicModel
         )
         guard let newService = try? OpenCodeProxyService(configuration: newConfig) else {
             return false
@@ -311,9 +317,11 @@ public final class QuotaHTTPServer: @unchecked Sendable {
             ?? env["AIUSAGE_STARTUP_TOKEN"].flatMap { $0.isEmpty ? nil : $0 }
         self.globalProxyAdminKey = env["GLOBAL_PROXY_ADMIN_KEY"].flatMap { $0.isEmpty ? nil : $0 }
         self.fixedCodexClientKey = codexConfig?.expectedClientKey
+        self.fixedCodexPublicModel = codexConfig?.publicModel
         self.fixedClaudeClientKey = proxyConfig?.expectedClientKey
         self.fixedClaudeDesktopClientKey = proxyConfig?.expectedDesktopClientKey
         self.fixedOpenCodeClientKey = openCodeConfig?.expectedClientKey
+        self.fixedOpenCodePublicModel = openCodeConfig?.publicModel
         self._activeNodeId = env["GLOBAL_PROXY_NODE_ID"].flatMap { $0.isEmpty ? nil : $0 }
         self._codexConfig = codexConfig
 

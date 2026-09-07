@@ -21,6 +21,8 @@ enum CodexConfigError: LocalizedError {
     case failedToCreateDirectory
     case failedToWriteFile
     case failedToRestore
+    case codexExecutableNotFound
+    case failedToBuildModelCatalog
 
     var errorDescription: String? {
         switch self {
@@ -42,6 +44,16 @@ enum CodexConfigError: LocalizedError {
             return AppSettings.shared.t("Failed to write Codex config.toml.", "写入 Codex config.toml 失败。")
         case .failedToRestore:
             return AppSettings.shared.t("Failed to restore Codex config.toml from backup.", "从备份还原 Codex config.toml 失败。")
+        case .codexExecutableNotFound:
+            return AppSettings.shared.t(
+                "Codex CLI was not found, so the single-model catalog could not be created.",
+                "未找到 Codex CLI，无法创建单模型目录。"
+            )
+        case .failedToBuildModelCatalog:
+            return AppSettings.shared.t(
+                "Failed to create the Codex single-model catalog.",
+                "创建 Codex 单模型目录失败。"
+            )
         }
     }
 }
@@ -81,6 +93,12 @@ final class CodexConfigManager {
 
     private var authBackupPath: String {
         authPath + ".aiusage.bak"
+    }
+
+    /// 全局代理专用目录。内容从当前 Codex 自带模型元数据派生，避免丢失思考程度与工具能力声明。
+    private var globalProxyModelCatalogPath: String {
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        return (home as NSString).appendingPathComponent(".codex/.aiusage-global-proxy-model-catalog.json")
     }
 
     private var authDirWatch: DispatchSourceFileSystemObject?
@@ -128,13 +146,15 @@ final class CodexConfigManager {
     /// - Parameters:
     ///   - baseURL: 本地代理地址（含 /v1，Codex 会在其后拼 /responses）。
     ///   - bearerToken: 写入代理专用 auth.json / .env，Codex 以 Bearer 头发给本地代理。
-    ///   - model: 写入顶层 model 的模型名（同时作为上游模型 / 定价键）。
+    ///   - model: 写入顶层 model 的模型名。
+    ///   - restrictModelCatalog: 仅全局代理启用；让 Codex 模型选择器只显示 `model`。
     ///   - globalTOML: 全局通用配置基底（启用时传入；否则 nil）。
     ///   - nodeTOML: 当前节点的额外 TOML（覆盖全局同名顶层键 / 同名表）。
     func activate(
         baseURL: String,
         bearerToken: String,
         model: String,
+        restrictModelCatalog: Bool = false,
         globalTOML: String? = nil,
         nodeTOML: String? = nil
     ) throws {
@@ -162,6 +182,15 @@ final class CodexConfigManager {
         }
 
         do {
+            let managedModelCatalogPath: String?
+            if restrictModelCatalog {
+                let catalog = try makeUnifiedModelCatalog(model: model)
+                try writeGlobalProxyModelCatalog(catalog)
+                managedModelCatalogPath = globalProxyModelCatalogPath
+            } else {
+                managedModelCatalogPath = nil
+            }
+
             // 备份即真相源：若已有备份，原文以备份为准（保证重复激活幂等，不会把脏文件当原文）。
             let pristine: String?
             if hasBackup {
@@ -181,10 +210,16 @@ final class CodexConfigManager {
                 baseURL: baseURL,
                 bearerToken: bearerToken,
                 model: model,
+                modelCatalogPath: managedModelCatalogPath,
                 baseTopLevel: merged.topLevel,
                 baseTables: merged.tables
             )
-            guard validateManagedConfig(injected, expectedBaseURL: baseURL) else {
+            guard validateManagedConfig(
+                injected,
+                expectedBaseURL: baseURL,
+                expectedModel: model,
+                expectedModelCatalogPath: managedModelCatalogPath
+            ) else {
                 throw CodexConfigError.invalidManagedConfig
             }
             try installProxyAuthIdentity(
@@ -231,10 +266,16 @@ final class CodexConfigManager {
             baseURL: baseURL,
             bearerToken: bearerToken,
             model: model,
+            modelCatalogPath: nil,
             baseTopLevel: merged.topLevel,
             baseTables: merged.tables
         )
-        assert(validateManagedConfig(config, expectedBaseURL: baseURL))
+        assert(validateManagedConfig(
+            config,
+            expectedBaseURL: baseURL,
+            expectedModel: model,
+            expectedModelCatalogPath: nil
+        ))
         return config
     }
 
@@ -287,6 +328,7 @@ final class CodexConfigManager {
             try CodexNoProxyFixer.remove()
             try removeFileIfExists(at: backupPath)
             try removeFileIfExists(at: authBackupPath)
+            try removeFileIfExists(at: globalProxyModelCatalogPath)
             lastProxyAPIKey = nil
         } catch {
             let operationError = error
@@ -308,7 +350,7 @@ final class CodexConfigManager {
 
     /// 在干净原文上注入受管理配置。
     /// 结构（保证所有顶层键都在任何 [table] 之前，符合 TOML 语义）：
-    ///   HEADER(model + 内置 openai provider + 强制 API 登录 + openai_base_url)
+    ///   HEADER(model + 可选单模型目录 + 内置 openai provider + 强制 API 登录 + openai_base_url)
     ///   → BASE 顶层键块 → 用户 body（去重）→ BASE 表块。
     /// 去重：删除 body 中与受管理块冲突的顶层键（model/model_provider/forced_login_method + BASE 顶层键）与同名 [table]，
     /// 避免 TOML 重复键/重复表解析错误（节点/全局配置在激活态优先生效；停用从备份完整还原）。
@@ -317,15 +359,20 @@ final class CodexConfigManager {
         baseURL: String,
         bearerToken _: String,
         model: String,
+        modelCatalogPath: String? = nil,
         baseTopLevel: [String] = [],
         baseTables: [String] = []
     ) -> String {
         let clean = normalizeLegacyProviderReferences(in: stripManagedBlocks(from: original))
+        var managedTopLevelKeys = Set(["model", "model_provider", "forced_login_method", "openai_base_url"])
+        if modelCatalogPath != nil {
+            managedTopLevelKeys.insert("model_catalog_json")
+        }
 
-        // provider / 认证 / 路由四个键只能由 HEADER 管理，不能被导入片段重复定义。
+        // provider / 认证 / 路由键只能由 HEADER 管理，不能被导入片段重复定义。
         let safeBaseTopLevel = baseTopLevel.filter { line in
             guard let key = topLevelKeyName(of: line.trimmingCharacters(in: .whitespaces)) else { return true }
-            return !["model", "model_provider", "forced_login_method", "openai_base_url"].contains(key)
+            return !managedTopLevelKeys.contains(key)
         }
         let managedProviderHeaders = [
             "model_providers.\(CodexSessionProviderMigrator.legacyAIUsageProvider)",
@@ -360,7 +407,7 @@ final class CodexConfigManager {
                 continue // 跳过冲突表内的行
             }
             if !seenTable {
-                if isManagedHeaderKey(trimmed) {
+                if isManagedHeaderKey(trimmed, managesModelCatalog: modelCatalogPath != nil) {
                     continue
                 }
                 if let key = topLevelKeyName(of: trimmed), baseKeyNames.contains(key) {
@@ -380,6 +427,9 @@ final class CodexConfigManager {
             "openai_base_url = \(tomlString(baseURL))",
             Self.headerEnd,
         ]
+        if let modelCatalogPath {
+            header.insert("model_catalog_json = \(tomlString(modelCatalogPath))", at: 2)
+        }
         if !safeBaseTopLevel.isEmpty {
             header.append("")
             header.append(Self.baseBegin)
@@ -835,19 +885,118 @@ final class CodexConfigManager {
         CodexProxyAuthIdentityPolicy.classify(data) == .chatGPT
     }
 
+    // MARK: - Global Proxy Model Catalog
+
+    /// 从当前 Codex 自带目录复制一份完整模型元数据，只改成统一入口名。
+    /// 这样模型选择器只显示 LLM，同时思考程度、工具能力与系统指令继续由 Codex 自己定义。
+    private func makeUnifiedModelCatalog(model: String) throws -> Data {
+        guard let codexExecutable = aiusageResolvedExecutable(named: "codex") else {
+            throw CodexConfigError.codexExecutableNotFound
+        }
+
+        let isolatedHome = fileManager.temporaryDirectory
+            .appendingPathComponent("aiusage-codex-catalog-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: isolatedHome, withIntermediateDirectories: true)
+        } catch {
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+        defer { try? fileManager.removeItem(at: isolatedHome) }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: codexExecutable)
+        process.arguments = ["debug", "models", "--bundled"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["CODEX_HOME"] = isolatedHome.path
+        environment["PATH"] = [environment["PATH"], aiusageDefaultCLIPath()]
+            .compactMap { $0 }
+            .joined(separator: ":")
+        process.environment = environment
+
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            codexConfigLog.error("Failed to start Codex model catalog command: \(String(describing: error), privacy: .public)")
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+        let sourceData = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else {
+            codexConfigLog.error("Codex model catalog command exited with status \(process.terminationStatus)")
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+
+        guard
+            let root = try? JSONSerialization.jsonObject(with: sourceData) as? [String: Any],
+            let models = root["models"] as? [[String: Any]],
+            !models.isEmpty
+        else {
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+
+        let listedModels = models.filter { ($0["visibility"] as? String) == "list" }
+        let candidates = listedModels.isEmpty ? models : listedModels
+        guard var unified = candidates.max(by: { lhs, rhs in
+            let lhsCount = (lhs["supported_reasoning_levels"] as? [Any])?.count ?? 0
+            let rhsCount = (rhs["supported_reasoning_levels"] as? [Any])?.count ?? 0
+            return lhsCount < rhsCount
+        }) else {
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+
+        unified["slug"] = model
+        unified["display_name"] = model
+        unified["description"] = "AIUsage global proxy route"
+        unified["visibility"] = "list"
+        unified["priority"] = 0
+        unified["availability_nux"] = NSNull()
+        unified["upgrade"] = NSNull()
+
+        do {
+            return try JSONSerialization.data(
+                withJSONObject: ["models": [unified]],
+                options: [.prettyPrinted, .sortedKeys]
+            )
+        } catch {
+            codexConfigLog.error("Failed to serialize Codex model catalog: \(String(describing: error), privacy: .public)")
+            throw CodexConfigError.failedToBuildModelCatalog
+        }
+    }
+
+    private func writeGlobalProxyModelCatalog(_ data: Data) throws {
+        let directory = (globalProxyModelCatalogPath as NSString).deletingLastPathComponent
+        do {
+            try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
+            try data.write(to: URL(fileURLWithPath: globalProxyModelCatalogPath), options: .atomic)
+            applyRestrictivePermissions(at: globalProxyModelCatalogPath)
+        } catch {
+            codexConfigLog.error("Failed to write Codex model catalog: \(String(describing: error), privacy: .public)")
+            throw CodexConfigError.failedToWriteFile
+        }
+    }
+
     // MARK: - Helpers
 
     /// HEADER 块托管的顶层键：注入时从用户正文剥离，避免与受管理块重复。
-    private func isManagedHeaderKey(_ trimmed: String) -> Bool {
+    private func isManagedHeaderKey(_ trimmed: String, managesModelCatalog: Bool) -> Bool {
         isTopLevelKey(trimmed, key: "model")
             || isTopLevelKey(trimmed, key: "model_provider")
             || isTopLevelKey(trimmed, key: "forced_login_method")
             || isTopLevelKey(trimmed, key: "openai_base_url")
+            || (managesModelCatalog && isTopLevelKey(trimmed, key: "model_catalog_json"))
     }
 
     /// 最后一层运行时不变量：AIUsage 代理配置只能引用永久存在的内置 provider，且身份与路由键
     /// 各出现一次。未来若合并逻辑回归到临时 provider，会在覆盖用户文件前失败。
-    private func validateManagedConfig(_ content: String, expectedBaseURL: String) -> Bool {
+    private func validateManagedConfig(
+        _ content: String,
+        expectedBaseURL: String,
+        expectedModel: String,
+        expectedModelCatalogPath: String?
+    ) -> Bool {
         var values: [String: [String]] = [:]
         var reachedTable = false
         var containsManagedProviderTable = false
@@ -870,13 +1019,23 @@ final class CodexConfigManager {
             }
             guard !reachedTable,
                   let key = topLevelKeyName(of: trimmed),
-                  ["model_provider", "forced_login_method", "openai_base_url"].contains(key),
+                  ["model", "model_catalog_json", "model_provider", "forced_login_method", "openai_base_url"].contains(key),
                   let value = tomlInlineStringValue(of: trimmed) else { continue }
             values[key, default: []].append(value)
         }
 
+        let catalogIsValid: Bool
+        if let expectedModelCatalogPath {
+            catalogIsValid = values["model_catalog_json"] == [expectedModelCatalogPath]
+        } else {
+            // 非全局代理不托管该键，允许用户原有的自定义模型目录继续生效。
+            catalogIsValid = true
+        }
+
         return content.contains(Self.headerBegin)
             && !containsManagedProviderTable
+            && values["model"] == [expectedModel]
+            && catalogIsValid
             && values["model_provider"] == [Self.providerId]
             && values["forced_login_method"] == ["api"]
             && values["openai_base_url"] == [expectedBaseURL]
@@ -916,7 +1075,14 @@ final class CodexConfigManager {
     }
 
     private func snapshotManagedFiles() throws -> [ManagedFileSnapshot] {
-        try [configPath, backupPath, authPath, authBackupPath, CodexNoProxyFixer.envFilePath].map { path in
+        try [
+            configPath,
+            backupPath,
+            authPath,
+            authBackupPath,
+            CodexNoProxyFixer.envFilePath,
+            globalProxyModelCatalogPath,
+        ].map { path in
             guard fileManager.fileExists(atPath: path) else {
                 return ManagedFileSnapshot(path: path, data: nil, permissions: nil)
             }

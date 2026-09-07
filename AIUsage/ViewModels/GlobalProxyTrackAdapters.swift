@@ -27,6 +27,10 @@ protocol GlobalProxyTrackAdapter {
 
     /// 可参与全局代理的节点（按轨/接口筛选）。
     func availableNodes(config: GlobalProxyConfig) -> [GlobalProxyNodeRef]
+    /// 某节点可供全局代理直接选择的真实模型目录。
+    func availableModels(config: GlobalProxyConfig, nodeId: String) -> [String]
+    /// 全局代理当前实际路由到的模型；无显式选择时回退到节点默认模型。
+    func routedModel(config: GlobalProxyConfig, nodeId: String) -> String?
 
     /// 常驻进程启动 env（不含 GLOBAL_PROXY_ADMIN_KEY / GLOBAL_PROXY_NODE_ID，由 runtime 注入）。
     /// 节点不存在时返回 nil。
@@ -52,6 +56,9 @@ protocol GlobalProxyTrackAdapter {
 }
 
 extension GlobalProxyTrackAdapter {
+    func availableModels(config _: GlobalProxyConfig, nodeId _: String) -> [String] { [] }
+    func routedModel(config _: GlobalProxyConfig, nodeId _: String) -> String? { nil }
+
     func restoreCLIConfigDiscardingExternalChanges() throws {
         try restoreCLIConfig()
     }
@@ -74,6 +81,25 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
             .map { GlobalProxyNodeRef(id: $0.id, name: $0.name) }
     }
 
+    func availableModels(config _: GlobalProxyConfig, nodeId: String) -> [String] {
+        guard let node = node(nodeId) else { return [] }
+        var models = node.runtimeModelCatalog
+        if !node.codexModel.isEmpty, !models.contains(node.codexModel) {
+            models.insert(node.codexModel, at: 0)
+        }
+        var seen = Set<String>()
+        return models.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    func routedModel(config: GlobalProxyConfig, nodeId: String) -> String? {
+        let models = availableModels(config: config, nodeId: nodeId)
+        if let selected = config.routedModelOverride(for: nodeId), models.contains(selected) {
+            return selected
+        }
+        guard let node = node(nodeId) else { return models.first }
+        return models.contains(node.codexModel) ? node.codexModel : models.first
+    }
+
     func startEnv(config: GlobalProxyConfig, nodeId: String) -> [String: String]? {
         guard let node = node(nodeId) else { return nil }
         var env: [String: String] = [
@@ -81,10 +107,13 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
             // Codex wire_api 恒为 responses：强制 Responses 忠实透传，避免有损转换。
             "OPENAI_API_MODE": "responses",
             "CODEX_CLIENT_KEY": config.effectiveClientKey,
+            "CODEX_PUBLIC_MODEL": config.virtualModel,
             "OPENAI_API_KEY": node.upstreamAPIKey,
             "OPENAI_BASE_URL": node.normalizedUpstreamBaseURL,
         ]
-        if !node.codexModel.isEmpty { env["CODEX_UPSTREAM_MODEL"] = node.codexModel }
+        if let model = routedModel(config: config, nodeId: nodeId) {
+            env["CODEX_UPSTREAM_MODEL"] = model
+        }
         if node.maxOutputTokens > 0 { env["MAX_OUTPUT_TOKENS"] = "\(node.maxOutputTokens)" }
         return env
     }
@@ -95,7 +124,7 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
             "nodeId": node.id,
             "baseURL": node.normalizedUpstreamBaseURL,
             "apiKey": node.upstreamAPIKey,
-            "model": node.codexModel,
+            "model": routedModel(config: config, nodeId: nodeId) ?? node.codexModel,
             "maxOutputTokens": node.maxOutputTokens,
         ]
     }
@@ -106,7 +135,8 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
         try CodexConfigManager.shared.activate(
             baseURL: config.codexBaseURL,
             bearerToken: config.effectiveClientKey,
-            model: config.virtualModel
+            model: config.virtualModel,
+            restrictModelCatalog: true
         )
     }
 
@@ -347,9 +377,30 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
             .map { GlobalProxyNodeRef(id: $0.id, name: $0.displayName) }
     }
 
+    func availableModels(config _: GlobalProxyConfig, nodeId: String) -> [String] {
+        guard let node = node(nodeId) else { return [] }
+        var models = node.models
+        if let defaultModel = node.effectiveDefaultModel, !models.contains(defaultModel) {
+            models.insert(defaultModel, at: 0)
+        }
+        var seen = Set<String>()
+        return models.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    func routedModel(config: GlobalProxyConfig, nodeId: String) -> String? {
+        let models = availableModels(config: config, nodeId: nodeId)
+        if let selected = config.routedModelOverride(for: nodeId), models.contains(selected) {
+            return selected
+        }
+        guard let node = node(nodeId), let defaultModel = node.effectiveDefaultModel else {
+            return models.first
+        }
+        return models.contains(defaultModel) ? defaultModel : models.first
+    }
+
     func startEnv(config: GlobalProxyConfig, nodeId: String) -> [String: String]? {
         guard let node = node(nodeId) else { return nil }
-        let model = node.effectiveDefaultModel ?? ""
+        let model = routedModel(config: config, nodeId: nodeId) ?? ""
         switch config.effectiveOpenCodeInterface {
         case .openAIResponses:
             // responses 接口复用 Codex 透传轨：上游模型由 CODEX_UPSTREAM_MODEL 覆盖。
@@ -357,6 +408,7 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
                 "PROXY_TARGET": "codex",
                 "OPENAI_API_MODE": "responses",
                 "CODEX_CLIENT_KEY": config.effectiveClientKey,
+                "CODEX_PUBLIC_MODEL": config.virtualModel,
                 "OPENAI_API_KEY": node.apiKey,
                 "OPENAI_BASE_URL": node.baseURL,
             ]
@@ -378,6 +430,7 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
             var env: [String: String] = [
                 "PROXY_TARGET": "opencode",
                 "OPENCODE_CLIENT_KEY": config.effectiveClientKey,
+                "OPENCODE_PUBLIC_MODEL": config.virtualModel,
                 "OPENAI_API_KEY": node.apiKey,
                 "OPENAI_BASE_URL": node.baseURL,
             ]
@@ -388,7 +441,7 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
 
     func switchPayload(config: GlobalProxyConfig, nodeId: String) -> [String: Any]? {
         guard let node = node(nodeId) else { return nil }
-        let model = node.effectiveDefaultModel ?? ""
+        let model = routedModel(config: config, nodeId: nodeId) ?? ""
         switch config.effectiveOpenCodeInterface {
         case .openAIResponses:
             return [

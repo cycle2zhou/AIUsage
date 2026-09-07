@@ -122,9 +122,21 @@ public actor CodexProxyService {
         )
     }
 
-    /// 模型列表透传：Codex 启动时会 GET /v1/models 刷新可用模型，原样转发上游结果。
+    /// 全局代理只发布固定虚拟模型；普通节点代理仍忠实透传上游目录。
     public func passthroughModels(inboundHeaders: [String: String]) async throws -> RawResponsesResult {
-        try await upstreamClient.fetchRawModels(
+        if let model = configuration.publicModel {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "object": "list",
+                "data": [[
+                    "id": model,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "aiusage",
+                ]],
+            ])
+            return RawResponsesResult(statusCode: 200, data: data, requestID: nil)
+        }
+        return try await upstreamClient.fetchRawModels(
             extraHeaders: Self.forwardableHeaders(from: inboundHeaders)
         )
     }

@@ -1,9 +1,10 @@
 import SwiftUI
 
 // MARK: - Global Proxy Section Scaffold
-// 三轨（Codex / Claude / OpenCode）「全局统一代理」配置卡片的统一外壳，保证视觉与交互完全一致：
-//   头部：图标 + 标题/状态 + 「激活节点」胶囊下拉 + 按需配置按钮 + 主开关；
-//   摘要行：始终展示端口 / 接口 / 模型等高频信息；
+// 三轨（Codex / Claude / OpenCode）「全局统一代理」配置卡片的统一外壳：
+//   头部：图标 + 标题/状态 + 按需配置按钮 + 主开关；
+//   Codex / OpenCode 可把「激活节点 → 真实模型」提升为独立路由条；Claude 保持紧凑头部布局。
+//   摘要行：展示端口 / 接口 / 客户端单一模型等连接信息；
 //   配置区：默认收起，仅停用态由用户显式展开编辑，避免低频参数长期占据首屏。
 //   错误行：操作失败提示。
 // 各轨通过 nodeControl / config / runningSummary 三个 @ViewBuilder 注入差异内容；通用控件样式见下方
@@ -25,6 +26,7 @@ struct GlobalProxySectionScaffold<NodeControl: View, Config: View, Summary: View
     let bindHost: String
     let allowLAN: Binding<Bool>
     let hasNodes: Bool
+    var showsDedicatedRoute = false
     let emptyHint: String
     let errorText: String?
     let toggle: Binding<Bool>
@@ -37,6 +39,9 @@ struct GlobalProxySectionScaffold<NodeControl: View, Config: View, Summary: View
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
+            if hasNodes, showsDedicatedRoute {
+                routeLine
+            }
             summaryLine
 
             if !hasNodes {
@@ -75,7 +80,7 @@ struct GlobalProxySectionScaffold<NodeControl: View, Config: View, Summary: View
         }
     }
 
-    // MARK: - Header (title + active node + master toggle)
+    // MARK: - Header (title + master toggle)
 
     private var header: some View {
         HStack(spacing: 10) {
@@ -102,7 +107,7 @@ struct GlobalProxySectionScaffold<NodeControl: View, Config: View, Summary: View
 
             Spacer(minLength: 12)
 
-            if hasNodes {
+            if hasNodes, !showsDedicatedRoute {
                 nodeControl()
             }
             if isBusy {
@@ -121,6 +126,30 @@ struct GlobalProxySectionScaffold<NodeControl: View, Config: View, Summary: View
                                     ? L("Turn off global proxy", "停用全局代理")
                                     : L("Turn on global proxy", "启用全局代理"))
         }
+    }
+
+    /// 全局代理最重要的操作被提升为独立路由条，明确表达客户端固定入口背后的实时去向。
+    private var routeLine: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(brand)
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(brand.opacity(0.12)))
+            nodeControl()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(brand.opacity(isEnabled ? 0.095 : 0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(brand.opacity(isEnabled ? 0.24 : 0.12), lineWidth: 1)
+        )
+        .padding(.top, 11)
     }
 
     private var statusBadge: some View {
@@ -798,6 +827,34 @@ struct GlobalProxyTip: View {
                 .truncationMode(.tail)
         }
         .foregroundStyle(.tertiary)
+        .help(text)
+    }
+}
+
+/// 修改客户端入口名会同时影响代理模型目录与客户端配置，因此用醒目的重启提示单独说明。
+struct GlobalProxyRestartNotice: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "arrow.clockwise.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.orange)
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color.orange.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.orange.opacity(0.18), lineWidth: 1)
+        )
         .help(text)
     }
 }

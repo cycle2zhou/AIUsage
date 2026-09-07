@@ -2,10 +2,10 @@ import SwiftUI
 import QuotaBackend
 
 // MARK: - OpenCode Global Proxy Section
-// OpenCode 轨「全局统一代理」配置卡片：常驻固定端口对外暴露稳定入口（接口 + 端口 + client key + 固定虚拟模型），
+// OpenCode 轨「全局统一代理」配置卡片：常驻固定端口对外只暴露一个可编辑客户端模型名，
 // opencode.json 一次性指向它即可（受管 provider 块 + 顶层 model）。启用时先选定接口协议
 // （OpenAI 兼容 / Anthropic / OpenAI Responses），只能在「同接口」节点间热切换以保证 wire 格式兼容；
-// 切换激活节点走进程内热替换（改写 model 为节点真实模型），CLI 无感、端口不变。
+// 节点与真实模型都在本卡片直接热切换（改写 model），CLI 无感、端口不变。
 // 启用期间接管 opencode.json，并禁用每节点单独激活（由本卡片统一切换激活节点）。
 // 成本/用量走代理日志按节点定价归因（不依赖 opencode.db），与 Claude/Codex 全局代理同口径。
 
@@ -14,7 +14,6 @@ struct OpenCodeGlobalProxySection: View {
     @ObservedObject private var runtime = GlobalProxyRuntime.opencode
     @ObservedObject private var store = OpenCodeNodeStore.shared
 
-    @State private var modelText: String = ""
     @State private var selectedNodeId: String = ""
 
     private static let brand = Color(red: 0.18, green: 0.83, blue: 0.75)
@@ -27,7 +26,7 @@ struct OpenCodeGlobalProxySection: View {
         GlobalProxySectionScaffold(
             brand: Self.brand,
             title: L("Global Proxy", "全局代理"),
-            subtitle: L("One stable endpoint; switch nodes within the selected interface.", "一个固定入口，可在同接口节点间切换。"),
+            subtitle: L("One stable endpoint; hot-switch nodes and models within the selected interface.", "一个固定入口，可在同接口下热切换节点与模型。"),
             isEnabled: isEnabled,
             isRunning: runtime.isRunning,
             isRuntimeOwnedByAnotherConsumer: false,
@@ -37,6 +36,7 @@ struct OpenCodeGlobalProxySection: View {
             bindHost: manager.config.displayBindHost,
             allowLAN: allowLANBinding,
             hasNodes: !nodes.isEmpty,
+            showsDedicatedRoute: true,
             emptyHint: emptyHint,
             errorText: manager.operationError,
             toggle: enableBinding,
@@ -49,10 +49,10 @@ struct OpenCodeGlobalProxySection: View {
         .onChange(of: store.nodes.count) { _, _ in selectedNodeId = resolvedSelection }
     }
 
-    // MARK: - Active Node (header; hot-switch when enabled)
+    // MARK: - Live Route (node → real model)
 
     private var nodeControl: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             GlobalProxyInlineLabel(text: L("Active Node", "激活节点"))
             GlobalProxyChipMenu(
                 brand: Self.brand,
@@ -63,6 +63,22 @@ struct OpenCodeGlobalProxySection: View {
                 selectedId: nodeBinding.wrappedValue,
                 onSelect: { nodeBinding.wrappedValue = $0 }
             )
+            Image(systemName: "arrow.right")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            GlobalProxyInlineLabel(text: L("Real Model", "真实模型"))
+            GlobalProxyChipMenu(
+                brand: Self.brand,
+                title: currentModelName,
+                systemImage: "cpu",
+                isDisabled: manager.isBusy || routeNodeId.isEmpty,
+                items: routeModels.map { GlobalProxyPickerItem(id: $0, name: $0) },
+                selectedId: currentModelName,
+                onSelect: { modelBinding.wrappedValue = $0 },
+                emptyMessage: L("No models available", "暂无可用模型")
+            )
+            Spacer(minLength: 0)
         }
     }
 
@@ -71,14 +87,26 @@ struct OpenCodeGlobalProxySection: View {
         return nodes.first(where: { $0.id == id })?.name ?? L("Select", "选择")
     }
 
+    private var routeNodeId: String { nodeBinding.wrappedValue }
+    private var routeModels: [String] { manager.availableModels(for: routeNodeId) }
+    private var currentModelName: String {
+        manager.routedModel(for: routeNodeId) ?? L("Select", "选择")
+    }
+
     // MARK: - Running Summary (read-only chips when enabled)
 
     @ViewBuilder private var runningSummary: some View {
         GlobalProxySummaryChip(label: L("Interface", "接口"), value: interface.displayName)
-        GlobalProxySummaryChip(label: L("Model", "模型"), value: manager.config.virtualModel)
+        GlobalProxySummaryChip(
+            label: L("Client Model", "客户端模型"),
+            value: manager.config.virtualModel.nilIfBlank ?? GlobalProxyConfig.defaultClientModel
+        )
+        if let model = manager.routedModel(for: routeNodeId) {
+            GlobalProxySummaryChip(label: L("Routes To", "路由到"), value: model)
+        }
     }
 
-    // MARK: - Configuration (interface + port + single virtual model)
+    // MARK: - Configuration (interface + connection)
     // 接口决定 npm 包 / 后端透传轨道 / 可切换的节点集合；启用后锁定（换接口需先停用），故归入折叠配置区。
 
     private var configContent: some View {
@@ -101,6 +129,15 @@ struct OpenCodeGlobalProxySection: View {
                         }
                     )
                 }
+                GlobalProxyField(label: L("Client Model", "客户端模型")) {
+                    TextField("LLM", text: clientModelBinding)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 180)
+                        .help(L(
+                            "The only model name shown in OpenCode.",
+                            "OpenCode 中显示的唯一模型名称。"
+                        ))
+                }
                 GlobalProxyField(label: L("Port", "端口")) {
                     TextField(
                         "14401",
@@ -110,17 +147,11 @@ struct OpenCodeGlobalProxySection: View {
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 90)
                 }
-                GlobalProxyField(label: L("Model", "模型")) {
-                    TextField(GlobalProxyConfig.defaultOpenCodeModel, text: $modelText)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 180)
-                        .onChange(of: modelText) { _, _ in commitSettings() }
-                }
                 Spacer(minLength: 0)
             }
-            GlobalProxyTip(text: L(
-                "Just the fixed entry name the CLI sends — name it anything. Each request is rewritten to the active node's real upstream model.",
-                "仅作 CLI 固定入口名，可任意取名；每次请求会被改写为激活节点的真实上游模型。"
+            GlobalProxyRestartNotice(text: L(
+                "After changing the client model, turn the global proxy back on and restart OpenCode. Real-model switching remains live.",
+                "修改客户端模型名后，请重新启用全局代理并重启 OpenCode；真实模型仍可热切换。"
             ))
         }
     }
@@ -138,7 +169,20 @@ struct OpenCodeGlobalProxySection: View {
             set: {
                 manager.updateSettings(
                     port: $0,
-                    virtualModel: modelText,
+                    virtualModel: manager.config.virtualModel,
+                    clientKey: manager.config.clientKey
+                )
+            }
+        )
+    }
+
+    private var clientModelBinding: Binding<String> {
+        Binding(
+            get: { manager.config.virtualModel },
+            set: {
+                manager.updateSettings(
+                    port: manager.config.port,
+                    virtualModel: $0,
                     clientKey: manager.config.clientKey
                 )
             }
@@ -182,6 +226,17 @@ struct OpenCodeGlobalProxySection: View {
         )
     }
 
+    private var modelBinding: Binding<String> {
+        Binding(
+            get: { currentModelName },
+            set: { newModel in
+                let nodeId = routeNodeId
+                guard !nodeId.isEmpty else { return }
+                Task { await manager.switchRoutedModel(to: newModel, for: nodeId) }
+            }
+        )
+    }
+
     // MARK: - Helpers
 
     private var emptyHint: String {
@@ -198,16 +253,6 @@ struct OpenCodeGlobalProxySection: View {
     }
 
     private func syncFromConfig() {
-        modelText = manager.config.virtualModel
         selectedNodeId = resolvedSelection
-    }
-
-    private func commitSettings() {
-        guard !isEnabled else { return }
-        manager.updateSettings(
-            port: manager.config.port,
-            virtualModel: modelText,
-            clientKey: manager.config.clientKey
-        )
     }
 }

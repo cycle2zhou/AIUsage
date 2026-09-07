@@ -85,6 +85,16 @@ final class GlobalProxyManager: ObservableObject {
         return adapter.availableNodes(config: config).first { $0.id == id }
     }
 
+    func availableModels(for nodeId: String?) -> [String] {
+        guard let nodeId else { return [] }
+        return adapter.availableModels(config: config, nodeId: nodeId)
+    }
+
+    func routedModel(for nodeId: String?) -> String? {
+        guard let nodeId else { return nil }
+        return adapter.routedModel(config: config, nodeId: nodeId)
+    }
+
     /// 切换 OpenCode 接口协议（仅 OpenCode 轨；切换会清空已选激活节点，因为节点集合随之变化）。仅停用态可改。
     func updateOpenCodeInterface(_ interface: OpenCodeProtocol) {
         guard !config.isEnabled, track == .opencode else { return }
@@ -96,14 +106,80 @@ final class GlobalProxyManager: ObservableObject {
 
     // MARK: - Settings (editable only while disabled)
 
-    /// 更新端口 / 主虚拟模型 / client key。仅在停用态可改（运行态改端口会让 CLI 失联）。
-    /// Codex/OpenCode 用此单模型入口；Claude 见 `updateClaudeModels`。
+    /// 更新端口 / 主虚拟模型 / client key。仅在停用态可改（运行态改入口会让客户端失联）。
+    /// Codex/OpenCode 只发布这里填写的一个客户端模型名；Claude 见 `updateClaudeModels`。
     func updateSettings(port: Int, virtualModel: String, clientKey: String) {
         guard !config.isEnabled else { return }
         config.port = max(1, min(65_535, port))
         config.virtualModel = virtualModel.trimmingCharacters(in: .whitespacesAndNewlines)
         config.clientKey = clientKey.trimmingCharacters(in: .whitespacesAndNewlines)
         persist()
+    }
+
+    /// 在全局代理面板直接选择真实模型。运行中只热替换上游；客户端始终继续发送配置的入口名。
+    @discardableResult
+    func switchRoutedModel(to model: String, for nodeId: String) async -> Bool {
+        guard !isBusy, (track == .codex || track == .opencode) else { return false }
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let models = adapter.availableModels(config: config, nodeId: nodeId)
+        guard !normalized.isEmpty, models.contains(normalized) else { return false }
+        guard adapter.routedModel(config: config, nodeId: nodeId) != normalized else { return true }
+
+        let previousConfig = config
+        config.setRoutedModel(normalized, for: nodeId)
+        operationError = nil
+
+        let shouldHotSwitch = isRuntimeEnabled
+            && runtime.isProcessRunning
+            && config.activeNodeId == nodeId
+        guard shouldHotSwitch else {
+            guard persist() else {
+                config = previousConfig
+                operationError = AppSettings.shared.t(
+                    "Could not save the routed model.",
+                    "无法保存路由模型。"
+                )
+                return false
+            }
+            return true
+        }
+
+        isBusy = true
+        defer { isBusy = false }
+        guard let node = node(for: nodeId),
+              let payload = adapter.switchPayload(config: config, nodeId: nodeId) else {
+            config = previousConfig
+            return false
+        }
+
+        do {
+            try await runtime.switchUpstream(
+                payload: payload,
+                adminPath: adapter.adminPath(config: config),
+                nodeId: node.id,
+                nodeName: node.name
+            )
+            guard persist() else {
+                config = previousConfig
+                throw GlobalProxyRuntimeError.startFailed("failed to save routed model")
+            }
+            return true
+        } catch {
+            config = previousConfig
+            if let rollback = adapter.switchPayload(config: previousConfig, nodeId: nodeId) {
+                try? await runtime.switchUpstream(
+                    payload: rollback,
+                    adminPath: adapter.adminPath(config: previousConfig),
+                    nodeId: node.id,
+                    nodeName: node.name
+                )
+            }
+            operationError = error.localizedDescription
+            globalProxyManagerLog.error(
+                "Failed to switch routed model (\(self.track.rawValue, privacy: .public)): \(String(describing: error), privacy: .public)"
+            )
+            return false
+        }
     }
 
     /// 更新是否允许局域网访问。仅停用态可改（运行态改绑定地址需重启进程）。
@@ -509,6 +585,14 @@ final class GlobalProxyManager: ObservableObject {
         isBusy = true
         operationError = nil
         defer { isBusy = false }
+
+        if (track == .codex || track == .opencode), config.virtualModel.nilIfBlank == nil {
+            operationError = AppSettings.shared.t(
+                "Enter a client model name before starting the global proxy.",
+                "请先填写客户端模型名，再启用全局代理。"
+            )
+            return
+        }
 
         guard let node = node(for: nodeId),
               let env = runtimeEnvironment(nodeId: nodeId) else {

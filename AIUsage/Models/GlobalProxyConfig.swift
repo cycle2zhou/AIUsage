@@ -112,7 +112,8 @@ struct ClaudeAppResolvedModels: Equatable {
 // 工作方式: isEnabled=true 时接管对应 CLI 配置（config.toml / settings.json / opencode.json）并拉起常驻代理。
 //
 // 模型字段语义：
-//   - Codex / OpenCode：仅用 virtualModel（单一虚拟模型名）。
+//   - Codex / OpenCode：virtualModel 是客户端看到的唯一模型名，默认 LLM；
+//     routedModelsByNode 记录每个节点实际路由的模型。
 //   - Claude：三层模型 virtualModel(=opus) / sonnetModel / haikuModel；值需含 opus/sonnet/haiku
 //     关键字，便于后端按层映射到激活节点的真实 big/middle/small 模型。
 
@@ -132,8 +133,11 @@ struct GlobalProxyConfig: Codable, Equatable {
     var port: Int
     /// 对客户端固定不变的 client key。
     var clientKey: String
-    /// 主虚拟模型名（Codex/OpenCode 唯一模型；Claude 的 opus 层）。
+    /// 主虚拟模型名（Codex/OpenCode 的单一客户端模型名；Claude 的 opus 层）。
     var virtualModel: String
+    /// Codex / OpenCode 全局代理按节点记忆的真实路由模型。
+    /// 缺失时跟随节点默认模型；不会改写节点本身的默认模型设置。
+    var routedModelsByNode: [String: String]? = nil
     /// Claude sonnet 层虚拟模型名（仅 Claude 轨使用）。
     var sonnetModel: String?
     /// Claude haiku 层虚拟模型名（仅 Claude 轨使用）。
@@ -225,13 +229,14 @@ struct GlobalProxyConfig: Codable, Equatable {
     static let realInstancePort = 8765
     // 接管模式下内部 Claude Science daemon 的监听端口（反代把 8765 的流量转发到这里）。
     static let realInstanceInternalPort = 14411
-    // 虚拟模型名仅作 CLI 固定入口名，可任意取——会被代理改写为激活节点真实上游模型，故取通用短名。
-    static let defaultVirtualModel = "gpt"
+    // Codex / OpenCode 对客户端只发布一个稳定入口名；LLM 是可编辑入口名的默认值。
+    static let defaultClientModel = "LLM"
+    static let defaultVirtualModel = defaultClientModel
     // Claude 三层名需含 opus/sonnet/haiku 关键字（后端据此映射到节点 big/middle/small），裸关键字即可。
     static let defaultClaudeOpus = "opus"
     static let defaultClaudeSonnet = "sonnet"
     static let defaultClaudeHaiku = "haiku"
-    static let defaultOpenCodeModel = "LLM"
+    static let defaultOpenCodeModel = defaultClientModel
 
     private static func freshClientKey() -> String {
         "aiusage-global-\(UUID().uuidString.prefix(8))"
@@ -290,6 +295,18 @@ struct GlobalProxyConfig: Codable, Equatable {
             config.ensureScienceWorkspaceDefaults()
             return config
         }
+    }
+
+    func routedModelOverride(for nodeID: String) -> String? {
+        routedModelsByNode?[nodeID]?.nilIfBlank
+    }
+
+    mutating func setRoutedModel(_ model: String, for nodeID: String) {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        var selections = routedModelsByNode ?? [:]
+        selections[nodeID] = normalized
+        routedModelsByNode = selections
     }
 
     /// 保证至少有一个工作区，并同步派生 `sandboxEmail`。读档后应调用。
@@ -507,22 +524,23 @@ enum GlobalProxyStore {
         }
         do {
             var config = try JSONDecoder().decode(GlobalProxyConfig.self, from: data)
+            let decoded = config
             if track == .science {
                 config.ensureScienceWorkspaceDefaults()
             } else if track == .claude {
-                let decoded = config
                 config.ensureClaudeDesktopDefaults()
                 if config.effectiveClaudeDesktopEnabled {
                     _ = persistDesktopMigration(from: config)
                     config.claudeDesktopEnabled = false
                     config.isEnabled = config.effectiveClaudeCodeEnabled
                 }
-                if config != decoded { _ = save(config, track: track) }
             } else if track == .desktop {
-                let decoded = config
                 config.ensureDesktopDefaults()
-                if config != decoded { _ = save(config, track: track) }
+            } else if track == .codex || track == .opencode {
+                config.virtualModel = config.virtualModel.nilIfBlank
+                    ?? GlobalProxyConfig.defaultClientModel
             }
+            if config != decoded { _ = save(config, track: track) }
             return config
         } catch {
             globalProxyLog.error("Failed to decode global proxy config (\(track.rawValue, privacy: .public)), using default: \(String(describing: error), privacy: .public)")

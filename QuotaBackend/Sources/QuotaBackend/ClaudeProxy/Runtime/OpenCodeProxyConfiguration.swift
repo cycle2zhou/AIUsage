@@ -21,6 +21,8 @@ public struct OpenCodeProxyConfiguration: Sendable {
     /// 全局统一代理模式下，把入站请求体的 `model` 强制改写为该真实上游模型名（CLI 端固定发虚拟模型名）。
     /// nil = 每节点代理模式，忠实透传不改写。
     public let forcedModel: String?
+    /// 对客户端发布的唯一模型名；仅全局代理设置。
+    public let publicModel: String?
 
     public init(
         enabled: Bool,
@@ -30,7 +32,8 @@ public struct OpenCodeProxyConfiguration: Sendable {
         expectedClientKey: String? = nil,
         requestTimeout: TimeInterval = 120,
         customHeaders: [String: String] = [:],
-        forcedModel: String? = nil
+        forcedModel: String? = nil,
+        publicModel: String? = nil
     ) {
         self.enabled = enabled
         self.bindPort = bindPort
@@ -40,6 +43,7 @@ public struct OpenCodeProxyConfiguration: Sendable {
         self.requestTimeout = requestTimeout
         self.customHeaders = customHeaders
         self.forcedModel = forcedModel?.nilIfBlank
+        self.publicModel = publicModel?.nilIfBlank
     }
 
     public var expectedClientAPIKey: String? { expectedClientKey }
@@ -82,13 +86,15 @@ public struct OpenCodeProxyConfiguration: Sendable {
         let clientKey = environment["OPENCODE_CLIENT_KEY"]?.nilIfBlank
         // 全局模式下随启动注入初始真实模型；每节点代理模式无此变量 → 忠实透传。
         let forcedModel = environment["OPENCODE_FORCED_MODEL"]?.nilIfBlank
+        let publicModel = environment["OPENCODE_PUBLIC_MODEL"]?.nilIfBlank
 
         return OpenCodeProxyConfiguration(
             enabled: true,
             upstreamBaseURL: baseURL,
             upstreamAPIKey: apiKey,
             expectedClientKey: clientKey,
-            forcedModel: forcedModel
+            forcedModel: forcedModel,
+            publicModel: publicModel
         )
     }
 }

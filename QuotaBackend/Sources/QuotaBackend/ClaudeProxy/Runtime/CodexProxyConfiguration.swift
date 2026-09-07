@@ -17,6 +17,8 @@ public struct CodexProxyConfiguration: Sendable {
     public let expectedClientKey: String?
     /// 上游模型覆盖；为空时透传 Codex 请求里的模型名。
     public let upstreamModel: String?
+    /// 对客户端发布的唯一模型名；仅全局代理设置，普通节点代理继续透传上游目录。
+    public let publicModel: String?
     public let maxOutputTokens: Int?
     public let requestTimeout: TimeInterval
     public let customHeaders: [String: String]
@@ -30,6 +32,7 @@ public struct CodexProxyConfiguration: Sendable {
         upstreamAPIKey: String,
         expectedClientKey: String? = nil,
         upstreamModel: String? = nil,
+        publicModel: String? = nil,
         maxOutputTokens: Int? = nil,
         requestTimeout: TimeInterval = 120,
         customHeaders: [String: String] = [:]
@@ -44,6 +47,7 @@ public struct CodexProxyConfiguration: Sendable {
         self.upstreamAPIKey = upstreamAPIKey
         self.expectedClientKey = expectedClientKey
         self.upstreamModel = upstreamModel?.nilIfBlank
+        self.publicModel = publicModel?.nilIfBlank
         self.maxOutputTokens = maxOutputTokens
         self.requestTimeout = requestTimeout
         self.customHeaders = customHeaders
@@ -98,6 +102,7 @@ public struct CodexProxyConfiguration: Sendable {
         let upstreamAPI = OpenAIUpstreamAPI.fromEnvironment(environment["OPENAI_API_MODE"])
         let clientKey = environment["CODEX_CLIENT_KEY"]?.nilIfBlank
         let upstreamModel = environment["CODEX_UPSTREAM_MODEL"]?.nilIfBlank
+        let publicModel = environment["CODEX_PUBLIC_MODEL"]?.nilIfBlank
         let maxOutputTokens = environment["MAX_OUTPUT_TOKENS"].flatMap { Int($0) }
 
         return CodexProxyConfiguration(
@@ -108,6 +113,7 @@ public struct CodexProxyConfiguration: Sendable {
             upstreamAPIKey: apiKey,
             expectedClientKey: clientKey,
             upstreamModel: upstreamModel,
+            publicModel: publicModel,
             maxOutputTokens: maxOutputTokens
         )
     }
