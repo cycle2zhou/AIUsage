@@ -220,7 +220,7 @@ struct OpenCodeManagementView: View {
         let mergedLastUsed = [stats?.lastUsedAt, global?.lastRequestAt].compactMap { $0 }.max()
         return OpenCodeNodeCard(
             node: node,
-            isActive: node.id == store.activeNodeId,
+            isActive: store.activeNodeIds.contains(node.id),
             isProxyOnlyRunning: store.proxyOnlyNodeIds.contains(node.id),
             isSelected: isSelected,
             isBusy: activationInProgress,
@@ -374,8 +374,8 @@ struct OpenCodeManagementView: View {
     // MARK: - Actions
 
     private func toggleActivation(_ node: OpenCodeNode) {
-        if node.id == store.activeNodeId {
-            deactivate()
+        if store.activeNodeIds.contains(node.id) {
+            deactivate(node)
         } else {
             activate(node)
         }

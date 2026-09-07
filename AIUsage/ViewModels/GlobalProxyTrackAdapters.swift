@@ -447,16 +447,23 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
         try OpenCodeConfigManager.shared.restoreDiscardingExternalChanges()
     }
 
-    func currentPerNodeActiveId() -> String? {
-        OpenCodeNodeStore.shared.activeNodeId
+    func currentPerNodeActiveIds() -> [String] {
+        OpenCodeNodeStore.shared.activeNodeIds
     }
 
-    func deactivatePerNode(_ id: String) async {
-        try? OpenCodeNodeStore.shared.deactivate()
+    func deactivatePerNode(_ ids: [String]) async {
+        let store = OpenCodeNodeStore.shared
+        for id in ids {
+            if let node = store.nodes.first(where: { $0.id == id }) {
+                try? store.deactivate(node)
+            }
+        }
     }
 
-    func activatePerNode(_ id: String) async {
-        guard let node = node(id) else { return }
-        try? await OpenCodeNodeStore.shared.activate(node)
+    func activatePerNode(_ ids: [String]) async {
+        for id in ids {
+            guard let node = node(id) else { continue }
+            try? await OpenCodeNodeStore.shared.activate(node)
+        }
     }
 }
