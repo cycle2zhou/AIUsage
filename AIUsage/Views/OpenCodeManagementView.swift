@@ -375,7 +375,13 @@ struct OpenCodeManagementView: View {
 
     private func toggleActivation(_ node: OpenCodeNode) {
         if store.activeNodeIds.contains(node.id) {
-            deactivate(node)
+            do {
+                try store.deactivate(node)
+                statsStore.refresh()
+            } catch {
+                store.refreshConfigContext()
+                actionError = error.localizedDescription
+            }
         } else {
             activate(node)
         }
