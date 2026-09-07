@@ -13,6 +13,8 @@ public actor CallAnalyticsEngine {
     let environment: [String: String]
     /// 永久每日冻结归档（issue #32）：删 session 后历史调用统计不丢。仅本 actor 访问，串行安全。
     private let archive: CallAnalyticsArchiveStore
+    /// OpenCode 明细账本（issue #67 调用分析部分）：按 part.id upsert、读不到的不删，删 session 后调用明细不丢。
+    private let opencodeLedger: OpenCodeCallLedgerStore
 
     public init(
         homeDirectory: String = FileManager.default.homeDirectoryForCurrentUser.path,
@@ -23,6 +25,7 @@ public actor CallAnalyticsEngine {
         self.timeZone = timeZone
         self.environment = environment
         self.archive = CallAnalyticsArchiveStore(homeDirectory: homeDirectory)
+        self.opencodeLedger = OpenCodeCallLedgerStore(homeDirectory: homeDirectory)
     }
 
     /// 计算调用分析快照。
@@ -52,16 +55,21 @@ public actor CallAnalyticsEngine {
             .collect(cutoff: scanCutoff)
         let codex = CodexCallEventSource(homeDirectory: homeDirectory, timeZone: timeZone, environment: environment)
             .collect(cutoff: scanCutoff)
-        let opencode = OpenCodeCallEventSource(
+        let opencodeRaw = OpenCodeCallEventSource(
             homeDirectory: homeDirectory, timeZone: timeZone, environment: environment,
             knownMCPServers: openCodeServers
         ).collect(cutoff: scanCutoff)
+
+        // OpenCode 明细账本：issue #67 调用分析部分。按 part.id upsert、读不到的不删，
+        // 使删除 opencode 会话后已记录的调用明细不丢；再从账本聚合回计数条目。
+        let opencodeLedgerEntries = opencodeLedger.merge(newEntries: opencodeRaw.entries, completedFullHistory: needsFullImport)
+        let opencodeEntries = OpenCodeCallLedgerStore.aggregate(opencodeLedgerEntries)
 
         // 实时结果按日分桶（entries 自带 dayKey；Claude 的 agentInvocations 已按天归属）。
         var computed: [String: CallAnalyticsDayBucket] = [:]
         for entry in claude.entries { computed[entry.dayKey, default: .empty].entries.append(entry) }
         for entry in codex.entries { computed[entry.dayKey, default: .empty].entries.append(entry) }
-        for entry in opencode.entries { computed[entry.dayKey, default: .empty].entries.append(entry) }
+        for entry in opencodeEntries { computed[entry.dayKey, default: .empty].entries.append(entry) }
         for (day, invs) in claude.agentInvocationsByDay {
             computed[day, default: .empty].agentInvocations.append(contentsOf: invs)
         }
@@ -88,7 +96,7 @@ public actor CallAnalyticsEngine {
 
         // 各源对外展示的「调用次数」以归档展示条目为准，避免页脚 M 次调用与上方 KPI 对不上；
         // available / filesScanned / errorCode 沿用本次实时扫描状态。
-        let rawStatuses = [claude.status, codex.status, opencode.status]
+        let rawStatuses = [claude.status, codex.status, opencodeRaw.status]
         let statuses = rawStatuses.map { status -> CallSourceStatus in
             let count = entries.filter { $0.source == status.source }.reduce(0) { $0 + $1.count }
             return CallSourceStatus(
