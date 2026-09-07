@@ -546,6 +546,7 @@ struct ProviderModelLibraryEditor: View {
     }
 
     @State private var rows: [Row]
+    @State private var expandedExtraRows: Set<UUID> = []
 
     init(
         library: Binding<[ProxyConfiguration.MappedModel]>,
@@ -647,7 +648,11 @@ struct ProviderModelLibraryEditor: View {
     private var rowsFingerprint: [String] {
         rows.map { row in
             let p = row.model.pricing
-            return "\(row.model.name)|\(p.inputPerMillion)|\(p.outputPerMillion)|\(p.cacheCreatePerMillion)|\(p.cacheReadPerMillion)|\(p.currency.rawValue)|\(p.source?.kind.rawValue ?? "")"
+            let extra = row.model.extraParameters
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: ",")
+            return "\(row.model.name)|\(p.inputPerMillion)|\(p.outputPerMillion)|\(p.cacheCreatePerMillion)|\(p.cacheReadPerMillion)|\(p.currency.rawValue)|\(p.source?.kind.rawValue ?? "")|\(extra)"
         }
     }
 
@@ -666,35 +671,71 @@ struct ProviderModelLibraryEditor: View {
             }
             .frame(width: 64, alignment: .leading)
             Text(L("Source", "来源")).frame(width: 60, alignment: .leading)
-            Spacer().frame(width: 20)
+            Spacer().frame(width: 40)
         }
         .font(.system(size: 10, weight: .medium))
         .foregroundStyle(.tertiary)
     }
 
     private func rowView(_ row: Binding<Row>) -> some View {
-        HStack(spacing: 6) {
-            TextField("gpt-5.5", text: row.model.name)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 12, design: .monospaced))
-                .frame(minWidth: 0, maxWidth: .infinity)
-                .layoutPriority(1)
-                .autocorrectionDisabled()
-            providerPriceField(row.model.pricing.inputPerMillion, pricing: row.model.pricing)
-            providerPriceField(row.model.pricing.outputPerMillion, pricing: row.model.pricing)
-            providerPriceField(row.model.pricing.cacheCreatePerMillion, pricing: row.model.pricing)
-            providerPriceField(row.model.pricing.cacheReadPerMillion, pricing: row.model.pricing)
-            PricingSourceIndicator(pricing: row.wrappedValue.model.pricing, width: 60)
-            Button {
-                rows.removeAll { $0.id == row.wrappedValue.id }
-            } label: {
-                Image(systemName: "minus.circle.fill")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.red.opacity(0.7))
+        let rowId = row.wrappedValue.id
+        let isExpanded = expandedExtraRows.contains(rowId)
+        let hasExtra = !row.wrappedValue.model.extraParameters.isEmpty
+        return VStack(spacing: 6) {
+            HStack(spacing: 6) {
+                TextField("gpt-5.5", text: row.model.name)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minWidth: 0, maxWidth: .infinity)
+                    .layoutPriority(1)
+                    .autocorrectionDisabled()
+                providerPriceField(row.model.pricing.inputPerMillion, pricing: row.model.pricing)
+                providerPriceField(row.model.pricing.outputPerMillion, pricing: row.model.pricing)
+                providerPriceField(row.model.pricing.cacheCreatePerMillion, pricing: row.model.pricing)
+                providerPriceField(row.model.pricing.cacheReadPerMillion, pricing: row.model.pricing)
+                PricingSourceIndicator(pricing: row.wrappedValue.model.pricing, width: 60)
+                Button {
+                    if isExpanded { expandedExtraRows.remove(rowId) }
+                    else { expandedExtraRows.insert(rowId) }
+                } label: {
+                    Image(systemName: hasExtra ? "gearshape.2.fill" : "gearshape.2")
+                        .font(.system(size: 12))
+                        .foregroundStyle(hasExtra ? Color.accentColor : Color.secondary.opacity(isExpanded ? 0.9 : 0.5))
+                }
+                .buttonStyle(.plain)
+                .frame(width: 20)
+                .help(L("Configure extra parameters for this model", "为该模型配置追加参数"))
+                Button {
+                    rows.removeAll { $0.id == rowId }
+                    expandedExtraRows.remove(rowId)
+                } label: {
+                    Image(systemName: "minus.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.red.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .frame(width: 20)
+                .help(L("Remove provider model", "移除提供商模型"))
             }
-            .buttonStyle(.plain)
-            .frame(width: 20)
-            .help(L("Remove provider model", "移除提供商模型"))
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ModelExtraParametersEditor(parameters: row.model.extraParameters)
+                    Text(L(
+                        "Keys support dot paths (e.g. \"limit.context\") or top-level keys (e.g. \"temperature\"). Written into this model's config, overriding node-level defaults.",
+                        "键支持点路径（如 \"limit.context\"）或顶级键（如 \"temperature\"），会写入该模型配置并覆盖节点级默认值。"
+                    ))
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.04))
+                )
+                .padding(.leading, 24)
+            }
         }
     }
 

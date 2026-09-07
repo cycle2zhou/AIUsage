@@ -70,6 +70,10 @@ struct OpenCodeModelEntry: Codable, Equatable, Identifiable {
     /// 每模型输入/输出模态（空 = 不写 modalities，由 OpenCode 取模型默认）。
     var inputModalities: [OpenCodeModality]
     var outputModalities: [OpenCodeModality]
+    /// 每模型追加的任意 key-value 参数（值存字符串，生成时智能解析为 JSON 标量/对象/数组）。
+    /// key 支持点路径（如 "limit.context"）或顶级键（如 "temperature"）；生成 opencode.json 时
+    /// 按路径合并到该模型配置对象，覆盖节点级默认（issue #69）。空 = 不追加。
+    var extraParameters: [String: String]
 
     init(
         id: String,
@@ -79,7 +83,8 @@ struct OpenCodeModelEntry: Codable, Equatable, Identifiable {
         priceCacheWritePerMillion: Double = 0,
         pricingSource: ProxyConfiguration.ModelPricing.Source? = nil,
         inputModalities: [OpenCodeModality] = [],
-        outputModalities: [OpenCodeModality] = []
+        outputModalities: [OpenCodeModality] = [],
+        extraParameters: [String: String] = [:]
     ) {
         self.id = id
         self.priceInputPerMillion = priceInputPerMillion
@@ -89,6 +94,7 @@ struct OpenCodeModelEntry: Codable, Equatable, Identifiable {
         self.pricingSource = pricingSource
         self.inputModalities = inputModalities
         self.outputModalities = outputModalities
+        self.extraParameters = extraParameters
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -100,9 +106,10 @@ struct OpenCodeModelEntry: Codable, Equatable, Identifiable {
         case pricingSource
         case inputModalities
         case outputModalities
+        case extraParameters
     }
 
-    // 自定义解码：modalities 为后加字段，旧档案缺省 → 空数组，保证既有节点平滑升级。
+    // 自定义解码：modalities / extraParameters 为后加字段，旧档案缺省 → 空，保证既有节点平滑升级。
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
@@ -116,6 +123,7 @@ struct OpenCodeModelEntry: Codable, Equatable, Identifiable {
         )
         inputModalities = try c.decodeIfPresent([OpenCodeModality].self, forKey: .inputModalities) ?? []
         outputModalities = try c.decodeIfPresent([OpenCodeModality].self, forKey: .outputModalities) ?? []
+        extraParameters = try c.decodeIfPresent([String: String].self, forKey: .extraParameters) ?? [:]
     }
 
     var hasPricing: Bool {

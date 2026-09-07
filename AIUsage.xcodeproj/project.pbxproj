@@ -134,6 +134,7 @@
 		C1AA000100000000000000B1 /* JSONWebEditorAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AA000100000000000000A1 /* JSONWebEditorAssets.swift */; };
 		C1AA000200000000000000B2 /* ProxyConfigEditorView+JSONTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AA000200000000000000A2 /* ProxyConfigEditorView+JSONTab.swift */; };
 		C1AA000300000000000000B3 /* ProxyModelLibraryEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AA000300000000000000A3 /* ProxyModelLibraryEditor.swift */; };
+		C1AA000500000000000000B5 /* ModelExtraParametersEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AA000500000000000000A5 /* ModelExtraParametersEditor.swift */; };
 		C1AA000400000000000000B4 /* PublicModelPricingImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AA000400000000000000A4 /* PublicModelPricingImport.swift */; };
 		C1AV00012FB0004000B26789 /* OpenCodeNodeAvailabilitySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1AV00022FB0004000B26789 /* OpenCodeNodeAvailabilitySection.swift */; };
 		C1CA00022FCA005000B26789 /* CallAnalyticsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CA00012FCA005000B26789 /* CallAnalyticsStore.swift */; };
@@ -352,6 +353,7 @@
 		C1AA000100000000000000A1 /* JSONWebEditorAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONWebEditorAssets.swift; sourceTree = "<group>"; };
 		C1AA000200000000000000A2 /* ProxyConfigEditorView+JSONTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ProxyConfigEditorView+JSONTab.swift"; sourceTree = "<group>"; };
 		C1AA000300000000000000A3 /* ProxyModelLibraryEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyModelLibraryEditor.swift; sourceTree = "<group>"; };
+		C1AA000500000000000000A5 /* ModelExtraParametersEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelExtraParametersEditor.swift; sourceTree = "<group>"; };
 		C1AA000400000000000000A4 /* PublicModelPricingImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PublicModelPricingImport.swift; sourceTree = "<group>"; };
 		C1AV00022FB0004000B26789 /* OpenCodeNodeAvailabilitySection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenCodeNodeAvailabilitySection.swift; sourceTree = "<group>"; };
 		C1CA00012FCA005000B26789 /* CallAnalyticsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallAnalyticsStore.swift; sourceTree = "<group>"; };
@@ -616,6 +618,7 @@
 				C1AA000100000000000000A1 /* JSONWebEditorAssets.swift */,
 				C1AA000200000000000000A2 /* ProxyConfigEditorView+JSONTab.swift */,
 				C1AA000300000000000000A3 /* ProxyModelLibraryEditor.swift */,
+				C1AA000500000000000000A5 /* ModelExtraParametersEditor.swift */,
 				C1AA000400000000000000A4 /* PublicModelPricingImport.swift */,
 				5EF87F062F8D0EED002FE291 /* ProxyManagementView.swift */,
 				C1CDH0022FD1000300B26789 /* ClaudeHubView.swift */,
@@ -995,6 +998,7 @@
 				C1AA000100000000000000B1 /* JSONWebEditorAssets.swift in Sources */,
 				C1AA000200000000000000B2 /* ProxyConfigEditorView+JSONTab.swift in Sources */,
 				C1AA000300000000000000B3 /* ProxyModelLibraryEditor.swift in Sources */,
+				C1AA000500000000000000B5 /* ModelExtraParametersEditor.swift in Sources */,
 				C1AA000400000000000000B4 /* PublicModelPricingImport.swift in Sources */,
 				5EF87F082F8D0EED002FE291 /* ProxyManagementView.swift in Sources */,
 				C1CDH0012FD1000300B26789 /* ClaudeHubView.swift in Sources */,

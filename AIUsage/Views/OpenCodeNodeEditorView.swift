@@ -442,6 +442,7 @@ struct OpenCodeNodeEditorView: View {
         let rowId = row.wrappedValue.id
         let isExpanded = expandedModalityRows.contains(rowId)
         let hasModalities = row.wrappedValue.entry.hasModalities
+        let hasExtraParameters = !row.wrappedValue.entry.extraParameters.isEmpty
         return VStack(spacing: 6) {
             HStack(spacing: 6) {
                 Button {
@@ -478,13 +479,14 @@ struct OpenCodeNodeEditorView: View {
                     if isExpanded { expandedModalityRows.remove(rowId) }
                     else { expandedModalityRows.insert(rowId) }
                 } label: {
-                    Image(systemName: hasModalities ? "square.stack.3d.up.fill" : "square.stack.3d.up")
+                    let hasAdvanced = hasModalities || hasExtraParameters
+                    Image(systemName: hasAdvanced ? "square.stack.3d.up.fill" : "square.stack.3d.up")
                         .font(.system(size: 12))
-                        .foregroundStyle(hasModalities ? Self.brand : Color.secondary.opacity(isExpanded ? 0.9 : 0.5))
+                        .foregroundStyle(hasAdvanced ? Self.brand : Color.secondary.opacity(isExpanded ? 0.9 : 0.5))
                 }
                 .buttonStyle(.plain)
                 .frame(width: 20)
-                .help(L("Configure modalities for this model", "为该模型配置模态（输入/输出）"))
+                .help(L("Configure advanced options for this model", "为该模型配置模态与追加参数"))
 
                 Button {
                     modelRows.removeAll { $0.id == row.wrappedValue.id }
@@ -506,7 +508,7 @@ struct OpenCodeNodeEditorView: View {
         }
     }
 
-    /// 单个模型的 modalities 配置面板：输入/输出两组可多选的模态芯片（issue #24）。
+    /// 单个模型的高级配置面板：modalities（输入/输出模态）+ 任意追加参数（issue #24 / #69）。
     private func modalityEditor(_ row: Binding<OpenCodeNodeEditorView.ModelRow>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             modalityRow(
@@ -522,6 +524,18 @@ struct OpenCodeNodeEditorView: View {
             Text(L(
                 "Leave empty to use the model's defaults. Written into the model's modalities block in the active OpenCode config.",
                 "留空则使用模型默认值。会写入当前 OpenCode 配置中该模型的 modalities 块。"
+            ))
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            Divider()
+            Text(L("Extra parameters", "追加参数"))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            ModelExtraParametersEditor(parameters: row.entry.extraParameters)
+            Text(L(
+                "Keys support dot paths (e.g. \"limit.context\") or top-level keys (e.g. \"temperature\"). Written into this model's config, overriding node-level defaults.",
+                "键支持点路径（如 \"limit.context\"）或顶级键（如 \"temperature\"），会写入该模型配置并覆盖节点级默认值。"
             ))
             .font(.system(size: 10))
             .foregroundStyle(.tertiary)
