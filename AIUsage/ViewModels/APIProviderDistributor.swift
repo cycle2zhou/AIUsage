@@ -420,7 +420,8 @@ final class APIProviderDistributor {
                 priceOutputPerMillion: m.pricing.outputPerMillionUSD,
                 priceCacheReadPerMillion: m.pricing.cacheReadPerMillionUSD,
                 priceCacheWritePerMillion: m.pricing.cacheCreatePerMillionUSD,
-                pricingSource: m.pricing.source
+                pricingSource: m.pricing.source,
+                extraParameters: m.extraParameters
             )
         }
     }

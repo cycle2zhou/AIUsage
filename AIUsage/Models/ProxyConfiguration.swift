@@ -228,10 +228,26 @@ struct ProxyConfiguration: Codable, Identifiable, Equatable {
     struct MappedModel: Codable, Equatable {
         var name: String
         var pricing: ModelPricing
+        /// 每模型追加的任意 key-value 参数（生成 opencode.json 时合并到该模型配置，覆盖节点级默认）。
+        /// 值存字符串、生成时智能解析；与 OpenCodeModelEntry.extraParameters 同构（issue #69）。
+        var extraParameters: [String: String]
 
-        init(name: String, pricing: ModelPricing = .zero) {
+        init(name: String, pricing: ModelPricing = .zero, extraParameters: [String: String] = [:]) {
             self.name = name
             self.pricing = pricing
+            self.extraParameters = extraParameters
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case name, pricing, extraParameters
+        }
+
+        // 自定义解码：extraParameters 为后加字段，旧档案缺省 → 空字典，保证既有 provider 平滑升级。
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decode(String.self, forKey: .name)
+            pricing = try c.decode(ModelPricing.self, forKey: .pricing)
+            extraParameters = try c.decodeIfPresent([String: String].self, forKey: .extraParameters) ?? [:]
         }
     }
 
