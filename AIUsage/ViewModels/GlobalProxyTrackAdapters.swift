@@ -44,11 +44,11 @@ protocol GlobalProxyTrackAdapter {
     /// 自己的 durable takeover session 做 force restore。
     func restoreCLIConfigDiscardingExternalChanges() throws
 
-    /// 本轨「每节点激活」当前激活 id（启用全局前先停掉它，干净交接）。
-    func currentPerNodeActiveId() -> String?
-    func deactivatePerNode(_ id: String) async
+    /// 本轨「每节点激活」当前激活 id 列表（启用全局前先停掉，干净交接）。
+    func currentPerNodeActiveIds() -> [String]
+    func deactivatePerNode(_ ids: [String]) async
     /// Gateway 接管失败时恢复刚才停用的每节点路由。
-    func activatePerNode(_ id: String) async
+    func activatePerNode(_ ids: [String]) async
 }
 
 extension GlobalProxyTrackAdapter {
@@ -114,16 +114,21 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
         try CodexConfigManager.shared.restore()
     }
 
-    func currentPerNodeActiveId() -> String? {
-        ProxyViewModel.shared.activatedId(isCodex: true)
+    func currentPerNodeActiveIds() -> [String] {
+        guard let id = ProxyViewModel.shared.activatedId(isCodex: true) else { return [] }
+        return [id]
     }
 
-    func deactivatePerNode(_ id: String) async {
-        await ProxyViewModel.shared.deactivateConfiguration(id)
+    func deactivatePerNode(_ ids: [String]) async {
+        for id in ids {
+            await ProxyViewModel.shared.deactivateConfiguration(id)
+        }
     }
 
-    func activatePerNode(_ id: String) async {
-        await ProxyViewModel.shared.activateConfiguration(id)
+    func activatePerNode(_ ids: [String]) async {
+        for id in ids {
+            await ProxyViewModel.shared.activateConfiguration(id)
+        }
     }
 }
 
@@ -313,18 +318,23 @@ struct ClaudeGlobalProxyAdapter: GlobalProxyTrackAdapter {
         try ClaudeSettingsManager.shared.clearEnv()
     }
 
-    func currentPerNodeActiveId() -> String? {
-        track == .claude ? ProxyViewModel.shared.activatedId(isCodex: false) : nil
+    func currentPerNodeActiveIds() -> [String] {
+        guard track == .claude, let id = ProxyViewModel.shared.activatedId(isCodex: false) else { return [] }
+        return [id]
     }
 
-    func deactivatePerNode(_ id: String) async {
+    func deactivatePerNode(_ ids: [String]) async {
         guard track == .claude else { return }
-        await ProxyViewModel.shared.deactivateConfiguration(id)
+        for id in ids {
+            await ProxyViewModel.shared.deactivateConfiguration(id)
+        }
     }
 
-    func activatePerNode(_ id: String) async {
+    func activatePerNode(_ ids: [String]) async {
         guard track == .claude else { return }
-        await ProxyViewModel.shared.activateConfiguration(id)
+        for id in ids {
+            await ProxyViewModel.shared.activateConfiguration(id)
+        }
     }
 }
 
