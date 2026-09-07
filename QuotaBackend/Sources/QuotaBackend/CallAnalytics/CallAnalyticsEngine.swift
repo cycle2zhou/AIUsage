@@ -119,6 +119,16 @@ public actor CallAnalyticsEngine {
         )
     }
 
+    /// 后台定时同步（菜单栏常驻场景）：以「今天」为窗口跑一次完整扫描，把 OpenCode 调用明细
+    /// 增量写入账本并冻结归档。不打开「调用分析」页也能持续记录，删除会话后已记录调用不丢。
+    /// 复用 computeSnapshot 的账本 merge + 归档 freeze 副作用，丢弃展示快照；
+    /// 频率由 App 侧 autoRefreshInterval 控制（默认 300s）。
+    public func syncToday() {
+        let clock = CallAnalyticsClock(timeZone: timeZone)
+        let todayStart = clock.calendar.startOfDay(for: Date())
+        _ = computeSnapshot(rangeKey: "today", cutoff: todayStart, end: nil)
+    }
+
     /// agentInvocations 跨日聚合键。
     private struct AgentInvocationKey: Hashable {
         let source: CallSourceKind

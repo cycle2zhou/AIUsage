@@ -28,6 +28,7 @@ final class ProviderRefreshCoordinator: ObservableObject {
     let engine = ProviderEngine()
     private var refreshTimer: Timer?
     private var claudeCodeRefreshTimer: Timer?
+    private var callAnalyticsSyncTimer: Timer?
     private var isCodexFullHistoryRefreshInProgress = false
 
     /// Used by toolbar / menu bar "Refresh All" buttons to decide between the
@@ -55,6 +56,7 @@ final class ProviderRefreshCoordinator: ObservableObject {
     private init() {
         setupAutoRefresh()
         setupClaudeCodeAutoRefresh()
+        setupCallAnalyticsAutoSync()
     }
 
     func configure(
@@ -96,6 +98,21 @@ final class ProviderRefreshCoordinator: ObservableObject {
             claudeCodeRefreshTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(settings.claudeCodeRefreshInterval), repeats: true) { [weak self] _ in
                 self?.refreshLocalTokenStatsOnly()
             }
+        }
+    }
+
+    func setupCallAnalyticsAutoSync() {
+        callAnalyticsSyncTimer?.invalidate()
+        if settings.autoRefreshInterval > 0 {
+            callAnalyticsSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(settings.autoRefreshInterval), repeats: true) { [weak self] _ in
+                self?.syncCallAnalytics()
+            }
+        }
+    }
+
+    private func syncCallAnalytics() {
+        Task {
+            await CallAnalyticsEngine.shared.syncToday()
         }
     }
 
