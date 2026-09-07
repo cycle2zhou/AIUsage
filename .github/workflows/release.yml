@@ -150,7 +150,9 @@ jobs:
         shell: bash
         env:
           SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
-          REQUIRE_SPARKLE_SIGNING: "1"
+          # Self-use forks without a Sparkle key skip EdDSA signing (ad-hoc
+          # packaging); upstream release quality still requires the secret.
+          REQUIRE_SPARKLE_SIGNING: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY != '' && '1' || '0' }}
           # Tag builds must be stable-certificate signed (issue #35); fail loudly
           # rather than shipping an ad-hoc release that re-prompts users.
           REQUIRE_STABLE_SIGNING: ${{ startsWith(github.ref, 'refs/tags/') && '1' || '0' }}
@@ -183,15 +185,21 @@ jobs:
 
           # P0: Autoupdate must share the outer App certificate leaf. Ad-hoc
           # Autoupdate under a self-signed host breaks Sparkle auto-update.
-          leaf_of() {
-            codesign -d -r- "$1" 2>&1 | sed -n 's/.*certificate leaf = H"\([0-9a-fA-F]*\)".*/\1/p' | head -1
-          }
-          APP_LEAF="$(leaf_of "$APP_PATH")"
-          AUTOUPDATE_LEAF="$(leaf_of "$AUTOUPDATE_PATH")"
-          test -n "$APP_LEAF"
-          test -n "$AUTOUPDATE_LEAF"
-          test "$APP_LEAF" = "$AUTOUPDATE_LEAF"
-          echo "Autoupdate leaf matches App leaf ($APP_LEAF)"
+          # Only enforced for stable certificate-signed builds; ad-hoc builds
+          # (no MACOS_SIGNING_IDENTITY) have no certificate leaf to compare.
+          if [[ -n "${MACOS_SIGNING_IDENTITY:-}" ]]; then
+            leaf_of() {
+              codesign -d -r- "$1" 2>&1 | sed -n 's/.*certificate leaf = H"\([0-9a-fA-F]*\)".*/\1/p' | head -1
+            }
+            APP_LEAF="$(leaf_of "$APP_PATH")"
+            AUTOUPDATE_LEAF="$(leaf_of "$AUTOUPDATE_PATH")"
+            test -n "$APP_LEAF"
+            test -n "$AUTOUPDATE_LEAF"
+            test "$APP_LEAF" = "$AUTOUPDATE_LEAF"
+            echo "Autoupdate leaf matches App leaf ($APP_LEAF)"
+          else
+            echo "Ad-hoc signing (no MACOS_SIGNING_IDENTITY); skipping certificate leaf check"
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v6
