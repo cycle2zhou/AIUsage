@@ -41,9 +41,10 @@ extension OpenCodeCostProvider {
     /// 这里排除以免在 OpenCode 用量/费用/热力图里被重复计数。per-node 受管键恒为 `aiusage-<slug>`，不受影响。
     static let globalProxyProviderID = "aiusage"
 
-    /// 解析一行 message；非 assistant、零用量或无法解码的行返回 nil。
+    /// 解析一行 message 为账本明细条目；非 assistant、零用量或无法解码的行返回 nil。
+    /// 保留 messageId/sessionId/timeCreatedMillis 用于增量账本去重与明细追溯（issue #67）。
     /// decoder 由调用方每次 fetch 创建一只并复用（避免逐行新建，也避免跨任务共享）。
-    func parseMessageRow(_ row: MessageRow, decoder: JSONDecoder) -> CodexRow? {
+    func parseLedgerEntry(_ row: MessageRow, decoder: JSONDecoder) -> OpenCodeLedgerEntry? {
         guard let message = try? decoder.decode(MessageData.self, from: row.data),
               message.role == "assistant" else {
             return nil
@@ -63,13 +64,16 @@ extension OpenCodeCostProvider {
         guard totalTokens > 0 || cost > 0 else { return nil }
 
         let createdAt = Date(timeIntervalSince1970: Double(row.timeCreatedMillis) / 1000)
-        return CodexRow(
+        return OpenCodeLedgerEntry(
+            messageId: row.messageId,
+            sessionId: row.sessionId,
+            timeCreatedMillis: row.timeCreatedMillis,
             dayKey: dayKey(createdAt),
             model: modelLabel(providerID: message.providerID, modelID: message.modelID),
             inputTokens: inputTokens,
+            outputTokens: outputTokens,
             cacheReadTokens: cacheReadTokens,
             cacheCreateTokens: cacheCreateTokens,
-            outputTokens: outputTokens,
             totalTokens: totalTokens,
             estimatedCostUsd: cost
         )

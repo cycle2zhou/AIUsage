@@ -37,15 +37,6 @@ extension OpenCodeCostProvider {
 
     // MARK: Aggregation
 
-    /// rows → 按日聚合桶。
-    func buildDays(rows: [CodexRow]) -> [String: CodexAggregateBucket] {
-        var days: [String: CodexAggregateBucket] = [:]
-        for row in rows {
-            days[row.dayKey, default: .empty].record(row: row)
-        }
-        return days
-    }
-
     func aggregateDays(
         _ bucketsByDay: [String: CodexAggregateBucket],
         matching: (String) -> Bool
