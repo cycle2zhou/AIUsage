@@ -159,7 +159,7 @@ struct CallAnalyticsView: View {
         .appPageChrome(colorScheme)
         .task(id: rangeSpec.rangeKey) {
             let spec = rangeSpec
-            await store.refreshIfNeeded(rangeKey: spec.rangeKey, cutoff: spec.cutoff, end: spec.end)
+            await store.refresh(rangeKey: spec.rangeKey, cutoff: spec.cutoff, end: spec.end)
         }
     }
 

@@ -16,9 +16,6 @@ final class CallAnalyticsStore: ObservableObject {
 
     private let engine = CallAnalyticsEngine.shared
     private let log = Logger(subsystem: "com.aiusage.desktop", category: "CallAnalytics")
-    /// 本会话是否已至少刷新过一次（区别于「仅加载了磁盘缓存」）。
-    private var hasRefreshedThisSession = false
-
     private static let cacheSchemaVersion = CallAnalyticsSnapshot.currentSchemaVersion
 
     init() {
@@ -26,14 +23,7 @@ final class CallAnalyticsStore: ObservableObject {
         Self.pruneStaleCaches()
     }
 
-    /// 首次进入或时间范围变化时刷新；否则沿用当前快照。
-    /// `rangeKey` 为该范围的稳定标识（自定义区间含起止日期），用于判断快照是否过期。
-    func refreshIfNeeded(rangeKey: String, cutoff: Date?, end: Date?) async {
-        if hasRefreshedThisSession, snapshot.rangeKey == rangeKey { return }
-        await refresh(rangeKey: rangeKey, cutoff: cutoff, end: end)
-    }
-
-    /// 强制重新解析并刷新（手动刷新按钮 / 时间范围切换）。
+    /// 重新解析并刷新（视图出现 / 手动刷新按钮 / 时间范围切换）。
     func refresh(rangeKey: String, cutoff: Date?, end: Date?) async {
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -41,7 +31,6 @@ final class CallAnalyticsStore: ObservableObject {
 
         let result = await engine.computeSnapshot(rangeKey: rangeKey, cutoff: cutoff, end: end)
         snapshot = result
-        hasRefreshedThisSession = true
         Self.saveCache(result)
         log.debug("Call analytics refreshed: \(result.entries.count, privacy: .public) entries, range \(rangeKey, privacy: .public)")
     }
