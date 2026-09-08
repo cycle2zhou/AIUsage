@@ -35,7 +35,7 @@ struct LocalSettingsEditorView: View {
         VStack(spacing: 0) {
             headerBar
             Divider()
-            JSONRawEditorView(jsonText: $jsonText, error: $jsonError)
+            JSONRawEditorView(jsonText: $jsonText, error: $jsonError, isJSONC: filePath.hasSuffix(".jsonc"))
                 .onChange(of: jsonText) { _, _ in
                     guard !isLoadingFile else { return }
                     hasUnsavedChanges = true
