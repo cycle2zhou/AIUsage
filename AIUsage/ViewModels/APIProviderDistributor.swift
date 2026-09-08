@@ -309,7 +309,7 @@ final class APIProviderDistributor {
             )
         }
         if wins(APIProviderSharedKey.defaultModel) {
-            let dm = provider.effectiveDefaultModel
+            let dm = provider.effectiveDefaultModel ?? ""
             proxy.defaultModel = dm
             if family.isCodex {
                 // Codex 运行时改写用的是 codexModel(=bigModel.name)，proxy.defaultModel 对其无效，
@@ -396,7 +396,7 @@ final class APIProviderDistributor {
             node.pricingCurrency = entries.contains { $0.hasPricing } ? .usd : .none
         }
         if wins(APIProviderSharedKey.defaultModel) {
-            node.defaultModel = provider.effectiveDefaultModel
+            node.defaultModel = provider.effectiveDefaultModel ?? ""
         }
 
         // 共享生成参数 / 上限（仅 OpenCode 消费，跟随主配置）。
@@ -451,7 +451,7 @@ final class APIProviderDistributor {
         if proxy.modelCatalog.models != ProxyConfiguration.ModelCatalog(mappedModels: master.models).models {
             overridden.insert(APIProviderSharedKey.models)
         }
-        if proxy.defaultModel != master.effectiveDefaultModel { overridden.insert(APIProviderSharedKey.defaultModel) }
+        if proxy.defaultModel != (master.effectiveDefaultModel ?? "") { overridden.insert(APIProviderSharedKey.defaultModel) }
         p.metadata.overriddenKeys = overridden.isEmpty ? nil : overridden
         return p
     }
@@ -470,7 +470,7 @@ final class APIProviderDistributor {
            n.apiKey != master.apiKey { overridden.insert(APIProviderSharedKey.apiKey) }
         let masterFingerprints = Self.openCodeEntries(from: master.models).map(Self.fingerprint)
         if n.modelEntries.map(Self.fingerprint) != masterFingerprints { overridden.insert(APIProviderSharedKey.models) }
-        if n.defaultModel != master.effectiveDefaultModel { overridden.insert(APIProviderSharedKey.defaultModel) }
+        if n.defaultModel != (master.effectiveDefaultModel ?? "") { overridden.insert(APIProviderSharedKey.defaultModel) }
         n.overriddenKeys = overridden.isEmpty ? nil : overridden
         return n
     }
