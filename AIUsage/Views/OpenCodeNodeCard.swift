@@ -12,8 +12,6 @@ struct OpenCodeNodeCard: View, Equatable {
     @Environment(\.colorScheme) private var colorScheme
     let node: OpenCodeNode
     let isActive: Bool
-    /// 该节点是否为显式默认节点（顶层 model 指向它）。
-    let isDefault: Bool
     /// 「仅代理」运行中（本地代理进程在跑但未接管 opencode.json）。
     let isProxyOnlyRunning: Bool
     let isSelected: Bool
@@ -29,8 +27,6 @@ struct OpenCodeNodeCard: View, Equatable {
     var onDragChanged: (CGFloat) -> Void = { _ in }
     var onDragEnded: () -> Void = {}
     var onToggleActivation: () -> Void = {}
-    var onSetDefault: () -> Void = {}
-    var onClearDefault: () -> Void = {}
     var onToggleProxyMode: () -> Void = {}
     var onToggleProxyOnly: () -> Void = {}
     var onTestConnectivity: () -> Void = {}
@@ -49,7 +45,6 @@ struct OpenCodeNodeCard: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.node == rhs.node &&
         lhs.isActive == rhs.isActive &&
-        lhs.isDefault == rhs.isDefault &&
         lhs.isProxyOnlyRunning == rhs.isProxyOnlyRunning &&
         lhs.isSelected == rhs.isSelected &&
         lhs.isBusy == rhs.isBusy &&
@@ -427,20 +422,6 @@ struct OpenCodeNodeCard: View, Equatable {
             )
         }
         .disabled(isBusy || (!isActive && activationDisabled))
-
-        if isActive {
-            if isDefault {
-                Button { onClearDefault() } label: {
-                    Label(L("Clear Default", "清除默认"), systemImage: "star.slash")
-                }
-                .disabled(isBusy)
-            } else {
-                Button { onSetDefault() } label: {
-                    Label(L("Set as Default", "设为默认"), systemImage: "star")
-                }
-                .disabled(isBusy)
-            }
-        }
 
         if node.proxyEnabled {
             Button { onToggleProxyOnly() } label: {

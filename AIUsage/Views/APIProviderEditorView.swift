@@ -235,7 +235,7 @@ struct APIProviderEditorView: View {
             VStack(alignment: .leading, spacing: 4) {
                 fieldLabel(L("Default Model", "默认模型"), required: false)
                 HStack(spacing: 6) {
-                    TextField(L("optional, blank = no default", "可选，留空则不设默认"), text: $defaultModel)
+                    TextField(L("falls back to first model", "缺省回退到首个模型"), text: $defaultModel)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(.body, design: .monospaced))
                     ModelLibrarySlotPicker(selection: $defaultModel, library: library)

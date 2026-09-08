@@ -211,7 +211,7 @@ extension MenuBarView {
         let globalEnabled = manager.isEnabled
         let globalNodes = manager.availableNodes()
         let accent = OpenCodeManagementView.brand
-        let activeId = openCodeStore.activeNode?.id
+        let activeId = openCodeStore.activeNodeIds.last
 
         var sections: [MenuBarTrackPanelSection] = []
         var onDeactivate: (() -> Void)?
