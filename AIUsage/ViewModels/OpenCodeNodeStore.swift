@@ -97,11 +97,9 @@ final class OpenCodeNodeStore: ObservableObject {
 
     // MARK: - Derived State
 
-    /// 默认节点（顶层 model 指向它，且需仍处于激活状态）；无显式默认时回退到最近激活节点。
+    /// 默认节点（顶层 model 指向它）；无显式默认时回退到最近激活节点，兼容旧 UI 显示。
     var activeNode: OpenCodeNode? {
-        if let defaultNodeId,
-           activeNodeIds.contains(defaultNodeId),
-           let node = nodes.first(where: { $0.id == defaultNodeId }) {
+        if let defaultNodeId, let node = nodes.first(where: { $0.id == defaultNodeId }) {
             return node
         }
         guard let lastId = activeNodeIds.last else { return nil }
@@ -319,10 +317,13 @@ final class OpenCodeNodeStore: ObservableObject {
     }
 
     /// 停用单个节点（issue #66）：仍有其它激活节点时重写配置，否则还原受管层。
-    /// defaultNodeId 停用后保留（未激活不生效），重新激活自动恢复顶层 model。
+    /// 若停用的是显式默认节点，一并清除默认（默认节点必须处于激活状态）。
     func deactivate(_ node: OpenCodeNode) throws {
         guard activeNodeIds.contains(node.id) else { return }
         activeNodeIds.removeAll { $0 == node.id }
+        if defaultNodeId == node.id {
+            defaultNodeId = nil
+        }
         if node.proxyEnabled, !proxyOnlyNodeIds.contains(node.id) {
             proxyRuntime.stop(nodeId: node.id)
         }
@@ -342,6 +343,7 @@ final class OpenCodeNodeStore: ObservableObject {
             proxyRuntime.stop(nodeId: node.id)
         }
         activeNodeIds.removeAll()
+        defaultNodeId = nil
         save()
         objectWillChange.send()
     }
