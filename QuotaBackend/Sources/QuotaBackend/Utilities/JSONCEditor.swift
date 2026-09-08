@@ -80,8 +80,18 @@ public enum JSONCEditor {
         let allMembersDeleted = !node.members.isEmpty && node.members.allSatisfy { target[$0.key] == nil }
         if !allMembersDeleted {
             for (idx, member) in node.members.enumerated() where target[member.key] == nil {
-                let delEnd = idx + 1 < node.members.count ? node.members[idx + 1].memberStart : node.contentEnd
-                edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
+                if idx + 1 < node.members.count {
+                    // 中间成员：删除到下一个成员起始位置（含当前成员的尾逗号）。
+                    let delEnd = node.members[idx + 1].memberStart
+                    edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
+                } else {
+                    // 最后一个成员：前向跳过空白找到前导逗号，删除到值结束位置（保留对象闭合前导换行）。
+                    var delStart = member.memberStart
+                    var i = member.memberStart - 1
+                    while i >= 0 && isWhitespace(node.chars[i]) { i -= 1 }
+                    if i >= 0 && node.chars[i] == "," { delStart = i }
+                    edits.append(Edit(start: delStart, end: member.node.end, replacement: ""))
+                }
             }
         }
 
