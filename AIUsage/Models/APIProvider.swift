@@ -264,11 +264,10 @@ struct APIProvider: Identifiable, Codable, Equatable {
         return AppSettings.shared.t("Untitled Provider", "未命名提供商")
     }
 
-    /// 实际生效的默认模型：defaultModel 失配时回退到列表首个。
-    var effectiveDefaultModel: String {
+    /// 实际生效的默认模型：defaultModel 命中模型列表才返回，否则为 nil（默认模型可选，不再回退首个）。
+    var effectiveDefaultModel: String? {
         let names = models.map(\.name)
-        if names.contains(defaultModel) { return defaultModel }
-        return names.first ?? defaultModel
+        return names.contains(defaultModel) ? defaultModel : nil
     }
 
     /// 是否填齐分发所需字段。
