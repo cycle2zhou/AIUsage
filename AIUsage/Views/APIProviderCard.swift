@@ -130,7 +130,7 @@ struct APIProviderCard: View {
             Text(L("\(provider.models.count) models", "\(provider.models.count) 个模型"))
                 .font(.caption2)
                 .foregroundStyle(AppContent.tertiary(colorScheme))
-            if let dm = provider.effectiveDefaultModel.nilIfBlank {
+            if let dm = provider.effectiveDefaultModel, !dm.isEmpty {
                 Text("·")
                     .font(.caption2)
                     .foregroundStyle(AppContent.tertiary(colorScheme))
@@ -350,7 +350,7 @@ struct APIProviderCard: View {
         }
         .disabled(provider.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
 
-        if let dm = provider.effectiveDefaultModel.nilIfBlank {
+        if let dm = provider.effectiveDefaultModel, !dm.isEmpty {
             Button {
                 copyToPasteboard(dm)
                 onCopied(L("Default model copied", "已复制默认模型"))

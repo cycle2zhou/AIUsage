@@ -410,15 +410,14 @@ struct OpenCodeNode: Identifiable, Codable, Equatable {
         return AppSettings.shared.t("Untitled Node", "未命名节点")
     }
 
-    /// 实际生效的默认模型：defaultModel 失配时回退到列表首个。
+    /// 实际生效的默认模型：defaultModel 命中模型列表才返回，否则为 nil（默认模型可选，不再回退首个）。
     var effectiveDefaultModel: String? {
-        if models.contains(defaultModel) { return defaultModel }
-        return models.first
+        models.contains(defaultModel) ? defaultModel : nil
     }
 
-    /// 节点是否填齐了激活所需字段。
+    /// 节点是否填齐了激活所需字段（默认模型可选，不再作为激活门槛，但至少要有模型列表）。
     var isComplete: Bool {
-        baseURL.nilIfBlank != nil && effectiveDefaultModel != nil
+        baseURL.nilIfBlank != nil && !models.isEmpty
     }
 
     /// 是否配置了定价（币种非 none 且任一模型有单价时写入受管块 cost 字段）。
