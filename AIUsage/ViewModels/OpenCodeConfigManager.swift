@@ -292,16 +292,18 @@ final class OpenCodeConfigManager {
         try activate(nodes: [node], defaultNodeId: node.id) { _ in commonSettings }
     }
 
-    /// 多节点激活（issue #66）：把多个节点的受管 provider 块同时注入 opencode 配置，顶层 model
-    /// 指向 defaultNodeId（最近激活的节点）。激活/停用单节点后都由调用方全量重写一次。
+    /// 多节点激活（issue #66）：把多个节点的受管 provider 块同时注入 opencode 配置。
+    /// 顶层 model 改为可选注入：defaultNodeId 命中某激活节点时才写 root["model"]，
+    /// 为 nil 时不接管顶层 model（保留原文，避免覆盖 oh-my-openagent 等外部工具已设置的模型）。
+    /// 激活/停用单节点后都由调用方全量重写一次。
     /// - Parameter commonSettingsFor: 每节点的通用配置片段（按节点合并策略，nil 表示不合并）。
     func activate(
         nodes: [OpenCodeNode],
-        defaultNodeId: String,
+        defaultNodeId: String?,
         commonSettingsFor: (OpenCodeNode) -> [String: Any]?
     ) throws {
-        let defaultNode = nodes.first(where: { $0.id == defaultNodeId }) ?? nodes.last
-        guard let defaultNode else { return }
+        let defaultNode = defaultNodeId.flatMap { id in nodes.first { $0.id == id } }
+        guard !nodes.isEmpty else { return }
         for node in nodes {
             guard node.isComplete, node.effectiveDefaultModel != nil else {
                 throw OpenCodeConfigError.nodeIncomplete
@@ -325,8 +327,9 @@ final class OpenCodeConfigManager {
                     openCodeConfigLog.error("auth.json write failed, falling back to inline apiKey in opencode config")
                 }
 
-                // 通用配置只合并一次（按默认节点策略），provider 块每个节点注入一个。
-                var root = mergedBase(pristine: pristine, commonSettings: commonSettingsFor(defaultNode))
+                // 通用配置只合并一次（按默认节点策略，无默认时按首个激活节点），provider 块每个节点注入一个。
+                let settingsNode = defaultNode ?? nodes.first
+                var root = mergedBase(pristine: pristine, commonSettings: settingsNode.flatMap(commonSettingsFor))
                 for node in nodes {
                     root = injectNodeBlock(
                         into: root,
@@ -335,12 +338,15 @@ final class OpenCodeConfigManager {
                         keyPlacement: keyPlacement
                     )
                 }
-                root["model"] = "\(defaultNode.managedProviderId)/\(defaultNode.effectiveDefaultModel!)"
+                // 默认模型可选：仅显式指定 defaultNodeId 时才写顶层 model，否则保留原文（外部工具可能已设置）。
+                if let defaultNode {
+                    root["model"] = "\(defaultNode.managedProviderId)/\(defaultNode.effectiveDefaultModel!)"
+                }
 
                 try writeManagedRoot(root)
                 try verifyEffectiveManagedProjection(target: root)
                 try recordManagedHash()
-                openCodeConfigLog.info("opencode config managed providers injected (nodes=\(nodes.count, privacy: .public), default=\(defaultNode.managedProviderId, privacy: .public), jsonc=\(self.usesJSONC, privacy: .public), keyInAuthFile=\(keyPlacement == .externalAuthFile, privacy: .public))")
+                openCodeConfigLog.info("opencode config managed providers injected (nodes=\(nodes.count, privacy: .public), default=\(defaultNode?.managedProviderId ?? "none", privacy: .public), jsonc=\(self.usesJSONC, privacy: .public), keyInAuthFile=\(keyPlacement == .externalAuthFile, privacy: .public))")
             }
         } catch {
             if !hadSession { discardSessionFiles() }
