@@ -76,9 +76,13 @@ public enum JSONCEditor {
         for member in node.members { existing[member.key] = member }
 
         // 删除：原文中存在但目标已无的键（连同其分隔逗号/前导空白到下一个键）。
-        for (idx, member) in node.members.enumerated() where target[member.key] == nil {
-            let delEnd = idx + 1 < node.members.count ? node.members[idx + 1].memberStart : node.contentEnd
-            edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
+        // 若所有成员都将被删除，则跳过逐个删除，交由 appendInsertEdits 整体重排，避免残留前导空白。
+        let allMembersDeleted = !node.members.isEmpty && node.members.allSatisfy { target[$0.key] == nil }
+        if !allMembersDeleted {
+            for (idx, member) in node.members.enumerated() where target[member.key] == nil {
+                let delEnd = idx + 1 < node.members.count ? node.members[idx + 1].memberStart : node.contentEnd
+                edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
+            }
         }
 
         // 更新/递归 + 收集新增键。
@@ -118,22 +122,28 @@ public enum JSONCEditor {
 
         // 锚点优先选「最后一个保留下来的成员」之后插入：前导逗号 + 换行，逗号/无逗号原文都干净。
         if let lastKept = node.members.last(where: { target[$0.key] != nil }) {
+            var insertEnd = lastKept.node.end
+            // 若 lastKept 后紧跟尾随逗号（原文不规范），把它一并替换，避免逗号残留到新增键之后。
+            if insertEnd < node.chars.count, node.chars[insertEnd] == "," {
+                insertEnd += 1
+            }
             var text = ""
             for (key, value) in sortedInserts {
                 text += ",\n" + memberIndent + memberText(key, value)
             }
-            edits.append(Edit(start: lastKept.node.end, end: lastKept.node.end, replacement: text))
+            edits.append(Edit(start: lastKept.node.end, end: insertEnd, replacement: text))
             return
         }
 
-        // 对象为空（或成员将被全部删除）：花括号间若仅空白则整体重排为带新成员；否则在 `{` 后插入。
+        // 对象为空（或成员将被全部删除）：整体重排为带新成员；仅当对象本就为空且花括号间有注释时，在 `{` 后插入保留注释。
+        let allMembersDeleted = !node.members.isEmpty && node.members.allSatisfy { target[$0.key] == nil }
         let interIsBlank = (node.contentStart..<node.contentEnd).allSatisfy { isWhitespace(node.chars[$0]) }
         let body = sortedInserts.map { memberIndent + memberText($0.0, $0.1) }.joined(separator: ",\n")
-        if interIsBlank {
+        if allMembersDeleted || interIsBlank {
             let replacement = "\n" + body + "\n" + braceIndent
             edits.append(Edit(start: node.contentStart, end: node.contentEnd, replacement: replacement))
         } else {
-            let replacement = "\n" + body + ","
+            let replacement = "\n" + body
             edits.append(Edit(start: node.contentStart, end: node.contentStart, replacement: replacement))
         }
     }
