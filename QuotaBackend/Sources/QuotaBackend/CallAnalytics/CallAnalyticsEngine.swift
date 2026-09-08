@@ -48,7 +48,9 @@ public actor CallAnalyticsEngine {
         let openCodeServers = Set(installedMCP.filter { $0.source == .opencode }.map(\.name))
 
         // 首次：扫全历史以冻结所有过去日（之后只扫请求窗口即可，省 IO）。
-        let needsFullImport = !archive.fullHistoryImported
+        // OpenCode 明细账本与日聚合归档是两套独立的全量导入标记：老用户 archive 可能已完成
+        // 导入，但新增的 opencode 账本尚未全量回填历史，此时仍需全量扫描，否则账本缺历史明细。
+        let needsFullImport = !archive.fullHistoryImported || !opencodeLedger.fullHistoryImported
         let scanCutoff: Date? = needsFullImport ? nil : cutoff
 
         let claude = ClaudeCallEventSource(homeDirectory: homeDirectory, timeZone: timeZone, environment: environment)

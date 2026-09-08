@@ -103,6 +103,11 @@ final class ProviderRefreshCoordinator: ObservableObject {
 
     func setupCallAnalyticsAutoSync() {
         callAnalyticsSyncTimer?.invalidate()
+        let normalized = AppSettings.normalizedAutoRefreshInterval(settings.autoRefreshInterval)
+        if settings.autoRefreshInterval != normalized {
+            settings.autoRefreshInterval = normalized
+        }
+
         if settings.autoRefreshInterval > 0 {
             callAnalyticsSyncTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(settings.autoRefreshInterval), repeats: true) { [weak self] _ in
                 self?.syncCallAnalytics()
