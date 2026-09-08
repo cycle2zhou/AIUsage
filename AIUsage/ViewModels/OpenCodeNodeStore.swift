@@ -16,6 +16,7 @@ private let openCodeStoreLog = Logger(subsystem: "com.aiusage.desktop", category
 enum OpenCodeNodeStoreError: LocalizedError {
     case proxyRequiresAPIKey
     case managedByGlobalProxy
+    case nodeNotActive
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +30,11 @@ enum OpenCodeNodeStoreError: LocalizedError {
                 "The OpenCode global proxy is enabled and manages the active configuration. Switch the active node from the global proxy panel, or disable it first.",
                 "OpenCode 全局代理已启用并接管当前配置。请在全局代理面板切换激活节点，或先停用全局代理。"
             )
+        case .nodeNotActive:
+            return AppSettings.shared.t(
+                "Only an active node can be set as the default model.",
+                "只有激活的节点才能设为默认模型。"
+            )
         }
     }
 }
@@ -38,8 +44,11 @@ final class OpenCodeNodeStore: ObservableObject {
     static let shared = OpenCodeNodeStore()
 
     @Published private(set) var nodes: [OpenCodeNode] = []
-    /// 当前激活的节点 id 列表（issue #66：多节点可同时激活；末位 = 最近激活，顶层 model 指向它）。
+    /// 当前激活的节点 id 列表（issue #66：多节点可同时激活；末位 = 最近激活）。
     @Published private(set) var activeNodeIds: [String] = []
+    /// 显式默认节点 id（顶层 model 指向它）。nil = 不接管顶层 model，让外部工具
+    /// （如 oh-my-openagent）已设置的默认模型继续生效。
+    @Published private(set) var defaultNodeId: String?
     /// 「仅代理」运行中的节点集合（不接管全局配置，仅拉起本地透传进程暴露端口，
     /// 供启动命令等外部接入使用）。与 Claude/Codex 同语义：可多个并行（各占一端口）、
     /// 与激活互不影响；激活某节点时该节点退出仅代理（代理随激活运行）。
@@ -57,6 +66,7 @@ final class OpenCodeNodeStore: ObservableObject {
         var nodes: [OpenCodeNode]
         var activeNodeId: String?
         var activeNodeIds: [String]?
+        var defaultNodeId: String?
         var proxyOnlyNodeIds: [String]?
     }
 
@@ -81,8 +91,11 @@ final class OpenCodeNodeStore: ObservableObject {
 
     // MARK: - Derived State
 
-    /// 最近激活的节点（顶层 model 指向它），兼容旧 UI 显示。
+    /// 默认节点（顶层 model 指向它）；无显式默认时回退到最近激活节点，兼容旧 UI 显示。
     var activeNode: OpenCodeNode? {
+        if let defaultNodeId, let node = nodes.first(where: { $0.id == defaultNodeId }) {
+            return node
+        }
         guard let lastId = activeNodeIds.last else { return nil }
         return nodes.first { $0.id == lastId }
     }
@@ -259,8 +272,9 @@ final class OpenCodeNodeStore: ObservableObject {
             // 代理模式：先拉起本地透传进程，再把受管层指向它；写配置失败则回收进程并回滚激活状态。
             try await proxyRuntime.start(node: node)
             let previousIds = activeNodeIds
-            activeNodeIds.removeAll { $0 == node.id }
-            activeNodeIds.append(node.id)
+            if !activeNodeIds.contains(node.id) {
+                activeNodeIds.append(node.id)
+            }
             do {
                 try rewriteManagedConfig()
             } catch {
@@ -270,8 +284,9 @@ final class OpenCodeNodeStore: ObservableObject {
             }
         } else {
             let previousIds = activeNodeIds
-            activeNodeIds.removeAll { $0 == node.id }
-            activeNodeIds.append(node.id)
+            if !activeNodeIds.contains(node.id) {
+                activeNodeIds.append(node.id)
+            }
             do {
                 try rewriteManagedConfig()
             } catch {
@@ -287,9 +302,13 @@ final class OpenCodeNodeStore: ObservableObject {
     }
 
     /// 停用单个节点（issue #66）：仍有其它激活节点时重写配置，否则还原受管层。
+    /// 若停用的是显式默认节点，一并清除默认（默认节点必须处于激活状态）。
     func deactivate(_ node: OpenCodeNode) throws {
         guard activeNodeIds.contains(node.id) else { return }
         activeNodeIds.removeAll { $0 == node.id }
+        if defaultNodeId == node.id {
+            defaultNodeId = nil
+        }
         if node.proxyEnabled, !proxyOnlyNodeIds.contains(node.id) {
             proxyRuntime.stop(nodeId: node.id)
         }
@@ -309,12 +328,13 @@ final class OpenCodeNodeStore: ObservableObject {
             proxyRuntime.stop(nodeId: node.id)
         }
         activeNodeIds.removeAll()
+        defaultNodeId = nil
         save()
         objectWillChange.send()
     }
 
     /// 全量重写受管配置：把 activeNodeIds 对应的所有节点 provider 块注入 opencode 配置，
-    /// 顶层 model 指向最近激活节点（activeNodeIds 末位）。
+    /// 顶层 model 仅在用户显式设置默认节点时写入（否则保留 pristine 原值）。
     private func rewriteManagedConfig() throws {
         let activeNodes = activeNodeIds.compactMap { id in nodes.first { $0.id == id } }
         guard !activeNodes.isEmpty else {
@@ -323,10 +343,36 @@ final class OpenCodeNodeStore: ObservableObject {
         }
         try configManager.activate(
             nodes: activeNodes,
-            defaultNodeId: activeNodeIds.last ?? activeNodes[0].id
+            defaultNodeId: defaultNodeId
         ) { [weak self] node in
             self?.commonSettings(for: node)
         }
+    }
+
+    /// 显式设置默认节点（顶层 model 指向它）。节点必须处于激活状态。
+    func setDefault(_ node: OpenCodeNode) throws {
+        guard activeNodeIds.contains(node.id) else {
+            throw OpenCodeNodeStoreError.nodeNotActive
+        }
+        let previousId = defaultNodeId
+        defaultNodeId = node.id
+        do {
+            try rewriteManagedConfig()
+        } catch {
+            defaultNodeId = previousId
+            throw error
+        }
+        save()
+        objectWillChange.send()
+    }
+
+    /// 清除默认节点：不再写顶层 model，让外部工具（如 oh-my-openagent）设置的模型生效。
+    func clearDefault() throws {
+        guard defaultNodeId != nil else { return }
+        defaultNodeId = nil
+        try rewriteManagedConfig()
+        save()
+        objectWillChange.send()
     }
 
     // MARK: - Proxy-Only Mode
@@ -520,6 +566,7 @@ final class OpenCodeNodeStore: ObservableObject {
             let file = try JSONDecoder.profileDecoder.decode(StoreFile.self, from: data)
             nodes = file.nodes
             activeNodeIds = file.activeNodeIds ?? (file.activeNodeId.map { [$0] } ?? [])
+            defaultNodeId = file.defaultNodeId
             proxyOnlyNodeIds = Set(file.proxyOnlyNodeIds ?? [])
             sortNodes()
             backfillProviderSlugs()
@@ -546,6 +593,7 @@ final class OpenCodeNodeStore: ObservableObject {
             nodes: nodes,
             activeNodeId: activeNodeIds.last,
             activeNodeIds: activeNodeIds.isEmpty ? nil : activeNodeIds,
+            defaultNodeId: defaultNodeId,
             proxyOnlyNodeIds: proxyOnlyNodeIds.isEmpty ? nil : Array(proxyOnlyNodeIds).sorted()
         )
         do {

@@ -221,6 +221,7 @@ struct OpenCodeManagementView: View {
         return OpenCodeNodeCard(
             node: node,
             isActive: store.activeNodeIds.contains(node.id),
+            isDefault: store.defaultNodeId == node.id,
             isProxyOnlyRunning: store.proxyOnlyNodeIds.contains(node.id),
             isSelected: isSelected,
             isBusy: activationInProgress,
@@ -238,6 +239,8 @@ struct OpenCodeManagementView: View {
             },
             onDragEnded: { commitNodeDrag() },
             onToggleActivation: { toggleActivation(node) },
+            onSetDefault: { setDefault(node) },
+            onClearDefault: { clearDefault() },
             onToggleProxyMode: { toggleProxyMode(node) },
             onToggleProxyOnly: { toggleProxyOnly(node) },
             onTestConnectivity: { testConnectivity(node) },
@@ -384,6 +387,24 @@ struct OpenCodeManagementView: View {
             }
         } else {
             activate(node)
+        }
+    }
+
+    private func setDefault(_ node: OpenCodeNode) {
+        do {
+            try store.setDefault(node)
+        } catch {
+            store.refreshConfigContext()
+            actionError = error.localizedDescription
+        }
+    }
+
+    private func clearDefault() {
+        do {
+            try store.clearDefault()
+        } catch {
+            store.refreshConfigContext()
+            actionError = error.localizedDescription
         }
     }
 
