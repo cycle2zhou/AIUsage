@@ -305,7 +305,7 @@ final class OpenCodeConfigManager {
         let defaultNode = defaultNodeId.flatMap { id in nodes.first { $0.id == id } }
         guard !nodes.isEmpty else { return }
         for node in nodes {
-            guard node.isComplete else {
+            guard node.isComplete, node.effectiveDefaultModel != nil else {
                 throw OpenCodeConfigError.nodeIncomplete
             }
         }
@@ -339,8 +339,8 @@ final class OpenCodeConfigManager {
                     )
                 }
                 // 默认模型可选：仅显式指定 defaultNodeId 时才写顶层 model，否则保留原文（外部工具可能已设置）。
-                if let defaultNode, let model = defaultNode.effectiveDefaultModel {
-                    root["model"] = "\(defaultNode.managedProviderId)/\(model)"
+                if let defaultNode {
+                    root["model"] = "\(defaultNode.managedProviderId)/\(defaultNode.effectiveDefaultModel!)"
                 }
 
                 try writeManagedRoot(root)

@@ -403,13 +403,13 @@ struct OpenCodeNodeEditorView: View {
 
             Text(showsPriceColumns
                  ? L(
-                      "Pick the default model with the radio button (optional — click the selected one again to clear). Prices are per million tokens (\(node.pricingCurrency == .cny ? "CNY, converted to USD at ≈\(cnyRateText) when written" : "USD")); OpenCode records real spend per message.",
-                      "单选钮选默认模型（可选，再点一次已选中的可取消）——节点卡片上也可随时切换。单价为每百万 token（\(node.pricingCurrency == .cny ? "人民币，写入时按 ≈\(cnyRateText) 折算为美元" : "美元")），OpenCode 据此逐条记录真实消费。"
-                  )
+                     "Pick the default model with the radio button — switchable from the node card anytime. Prices are per million tokens (\(node.pricingCurrency == .cny ? "CNY, converted to USD at ≈\(cnyRateText) when written" : "USD")); OpenCode records real spend per message.",
+                     "单选钮选默认模型——节点卡片上也可随时切换。单价为每百万 token（\(node.pricingCurrency == .cny ? "人民币，写入时按 ≈\(cnyRateText) 折算为美元" : "美元")），OpenCode 据此逐条记录真实消费。"
+                 )
                  : L(
-                      "Pick the default model with the radio button (optional — click the selected one again to clear). Pricing is off (cost stays $0); choose USD/CNY to price each model.",
-                      "单选钮选默认模型（可选，再点一次已选中的可取消）——节点卡片上也可随时切换。当前不计价（费用恒为 $0）；选择 USD/CNY 后可为每个模型单独定价。"
-                  ))
+                     "Pick the default model with the radio button — switchable from the node card anytime. Pricing is off (cost stays $0); choose USD/CNY to price each model.",
+                     "单选钮选默认模型——节点卡片上也可随时切换。当前不计价（费用恒为 $0）；选择 USD/CNY 后可为每个模型单独定价。"
+                 ))
             .font(.caption2)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
@@ -446,7 +446,7 @@ struct OpenCodeNodeEditorView: View {
             HStack(spacing: 6) {
                 Button {
                     guard !modelId.isEmpty else { return }
-                    node.defaultModel = isDefault ? "" : modelId
+                    node.defaultModel = modelId
                 } label: {
                     Image(systemName: isDefault ? "largecircle.fill.circle" : "circle")
                         .font(.system(size: 13))
@@ -454,9 +454,7 @@ struct OpenCodeNodeEditorView: View {
                 }
                 .buttonStyle(.plain)
                 .frame(width: 30)
-                .help(isDefault
-                      ? L("Clear default model", "取消默认模型")
-                      : L("Use as default model", "设为默认模型"))
+                .help(L("Use as default model", "设为默认模型"))
 
                 TextField("deepseek-chat", text: row.entry.id)
                     .textFieldStyle(.roundedBorder)
@@ -870,8 +868,9 @@ struct OpenCodeNodeEditorView: View {
     }
 
     private func ensureDefaultModelValid() {
-        if !parsedModels.contains(node.defaultModel) {
-            node.defaultModel = ""
+        let models = parsedModels
+        if !models.contains(node.defaultModel) {
+            node.defaultModel = models.first ?? ""
         }
     }
 
@@ -899,7 +898,7 @@ struct OpenCodeNodeEditorView: View {
             return clamped
         }
         if !saved.models.contains(saved.defaultModel) {
-            saved.defaultModel = ""
+            saved.defaultModel = saved.models.first ?? ""
         }
         if !(1...65_535).contains(saved.proxyPort) {
             saved.proxyPort = OpenCodeNode.defaultProxyPort
