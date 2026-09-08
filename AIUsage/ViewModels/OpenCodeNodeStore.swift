@@ -130,6 +130,7 @@ final class OpenCodeNodeStore: ObservableObject {
     func upsert(_ node: OpenCodeNode) {
         var updated = node
         ensureProviderSlug(&updated)
+        let previous = nodes.first(where: { $0.id == node.id })
         if let index = nodes.firstIndex(where: { $0.id == node.id }) {
             nodes[index] = updated
         } else {
@@ -139,6 +140,14 @@ final class OpenCodeNodeStore: ObservableObject {
             }
             nodes.insert(updated, at: 0)
             sortNodes()
+        }
+        // 默认模型从无到有→自动设为默认节点；从有到无且正是默认节点→清除（同步顶层 model）。
+        let previousHadDefault = previous?.effectiveDefaultModel != nil
+        let updatedHasDefault = updated.effectiveDefaultModel != nil
+        if updatedHasDefault && !previousHadDefault {
+            defaultNodeId = updated.id
+        } else if !updatedHasDefault && previousHadDefault && defaultNodeId == updated.id {
+            defaultNodeId = nil
         }
         save()
 
