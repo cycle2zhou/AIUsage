@@ -161,6 +161,7 @@ struct SettingsView: View {
         .onChange(of: settings.autoRefreshInterval) { _, _ in
             settings.saveSettings()
             refreshCoordinator.setupAutoRefresh()
+            refreshCoordinator.setupCallAnalyticsAutoSync()
         }
         .onChange(of: settings.claudeCodeRefreshInterval) { _, _ in
             settings.saveSettings()
