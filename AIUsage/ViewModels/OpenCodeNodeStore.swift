@@ -17,7 +17,6 @@ enum OpenCodeNodeStoreError: LocalizedError {
     case proxyRequiresAPIKey
     case managedByGlobalProxy
     case nodeNotActive
-    case nodeHasNoDefaultModel
 
     var errorDescription: String? {
         switch self {
@@ -35,11 +34,6 @@ enum OpenCodeNodeStoreError: LocalizedError {
             return AppSettings.shared.t(
                 "Only an active node can be set as the default model.",
                 "只有激活的节点才能设为默认模型。"
-            )
-        case .nodeHasNoDefaultModel:
-            return AppSettings.shared.t(
-                "This node has no default model. Set a default model in the node editor first.",
-                "该节点没有默认模型，请先在节点编辑里设置默认模型。"
             )
         }
     }
@@ -355,13 +349,10 @@ final class OpenCodeNodeStore: ObservableObject {
         }
     }
 
-    /// 显式设置默认节点（顶层 model 指向它）。节点必须处于激活状态且已配置默认模型。
+    /// 显式设置默认节点（顶层 model 指向它）。节点必须处于激活状态。
     func setDefault(_ node: OpenCodeNode) throws {
         guard activeNodeIds.contains(node.id) else {
             throw OpenCodeNodeStoreError.nodeNotActive
-        }
-        guard node.effectiveDefaultModel != nil else {
-            throw OpenCodeNodeStoreError.nodeHasNoDefaultModel
         }
         let previousId = defaultNodeId
         defaultNodeId = node.id
