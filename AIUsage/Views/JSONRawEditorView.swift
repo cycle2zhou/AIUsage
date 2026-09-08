@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import WebKit
+import QuotaBackend
 
 // MARK: - JSON Raw Editor View
 // Full-screen code editor for raw JSON editing of settings.json content.
@@ -13,6 +14,7 @@ struct JSONRawEditorView: View {
     var title: String = L("settings.json", "settings.json")
     var isEditable: Bool = true
     var showsActions: Bool = true
+    var isJSONC: Bool = false
     var lineMarkers: [Int: String] = [:]
     @State private var lineCount: Int = 1
     @State private var showValidationSuccess = false
@@ -95,6 +97,15 @@ struct JSONRawEditorView: View {
 
     private func formatJSON() {
         showValidationSuccess = false
+        if isJSONC {
+            guard let formatted = JSONCEditor.format(jsonText) else {
+                error = L("Cannot format: invalid JSONC", "无法格式化：JSONC 格式无效")
+                return
+            }
+            jsonText = formatted
+            error = nil
+            return
+        }
         guard let data = jsonText.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data),
               let formatted = try? JSONSerialization.data(
@@ -110,6 +121,19 @@ struct JSONRawEditorView: View {
     }
 
     private func validateJSON() {
+        if isJSONC {
+            if JSONCEditor.parseObject(jsonText) != nil {
+                error = nil
+                withAnimation(.easeInOut(duration: 0.25)) { showValidationSuccess = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    withAnimation(.easeOut(duration: 0.3)) { showValidationSuccess = false }
+                }
+            } else {
+                error = L("Root must be a valid JSONC object", "根节点必须是有效的 JSONC 对象")
+                showValidationSuccess = false
+            }
+            return
+        }
         guard let data = jsonText.data(using: .utf8) else {
             error = L("Invalid encoding", "编码无效")
             showValidationSuccess = false

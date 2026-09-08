@@ -39,6 +39,84 @@ public enum JSONCEditor {
         return patched
     }
 
+    /// 重新格式化 JSONC 文本：修复缩进与尾随逗号，保留注释。
+    /// - Returns: 格式化后的文本；解析失败（非对象根）时返回 nil。
+    public static func format(_ text: String) -> String? {
+        let chars = Array(text)
+        var parser = Parser(chars: chars)
+        guard let root = try? parser.parseDocument(), root.kind == .object else { return nil }
+        let indentUnit = detectIndentUnit(chars)
+        var out = ""
+        render(node: root, level: 0, indentUnit: indentUnit, chars: chars, out: &out)
+        return out
+    }
+
+    private static func render(node: Node, level: Int, indentUnit: String, chars: [Character], out: inout String) {
+        let indent = String(repeating: indentUnit, count: level)
+        let childIndent = String(repeating: indentUnit, count: level + 1)
+
+        switch node.kind {
+        case .object:
+            out += "{\n"
+            var prevEnd = node.contentStart
+            for (idx, member) in node.members.enumerated() {
+                renderComments(from: prevEnd, to: member.memberStart, indent: childIndent, chars: chars, out: &out)
+                out += childIndent + "\"\(escapeString(member.key))\": "
+                render(node: member.node, level: level + 1, indentUnit: indentUnit, chars: chars, out: &out)
+                if idx < node.members.count - 1 { out += "," }
+                out += "\n"
+                prevEnd = member.node.end
+            }
+            renderComments(from: prevEnd, to: node.contentEnd, indent: childIndent, chars: chars, out: &out)
+            out += indent + "}"
+        case .array:
+            out += "[\n"
+            var prevEnd = node.contentStart
+            for (idx, element) in node.elements.enumerated() {
+                renderComments(from: prevEnd, to: element.start, indent: childIndent, chars: chars, out: &out)
+                out += childIndent
+                render(node: element, level: level + 1, indentUnit: indentUnit, chars: chars, out: &out)
+                if idx < node.elements.count - 1 { out += "," }
+                out += "\n"
+                prevEnd = element.end
+            }
+            renderComments(from: prevEnd, to: node.contentEnd, indent: childIndent, chars: chars, out: &out)
+            out += indent + "]"
+        default:
+            out += String(chars[node.start..<node.end])
+        }
+    }
+
+    private static func renderComments(from: Int, to: Int, indent: String, chars: [Character], out: inout String) {
+        var i = from
+        while i < to {
+            let c = chars[i]
+            if c == " " || c == "\t" || c == "\r" || c == "\n" { i += 1; continue }
+            if c == "/", i + 1 < to, chars[i + 1] == "/" {
+                let start = i
+                while i < to && chars[i] != "\n" { i += 1 }
+                let comment = String(chars[start..<i]).trimmingCharacters(in: .whitespaces)
+                if !comment.isEmpty { out += indent + comment + "\n" }
+                continue
+            }
+            if c == "/", i + 1 < to, chars[i + 1] == "*" {
+                let start = i
+                i += 2
+                while i + 1 < to && !(chars[i] == "*" && chars[i + 1] == "/") { i += 1 }
+                i = min(i + 2, to)
+                let lines = String(chars[start..<i]).components(separatedBy: "\n")
+                for (li, line) in lines.enumerated() {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.isEmpty { continue }
+                    out += indent + trimmed + (li < lines.count - 1 ? "\n" : "")
+                }
+                out += "\n"
+                continue
+            }
+            i += 1
+        }
+    }
+
     // MARK: - Edit Model
 
     private struct Edit {
@@ -274,11 +352,12 @@ public enum JSONCEditor {
         let start: Int
         var end: Int
         var value: Any
-        // object only
+        // container (object/array) only
         let chars: [Character]
         var members: [Member] = []
-        var contentStart: Int = 0   // `{` 之后的位置
-        var contentEnd: Int = 0     // `}` 所在位置
+        var elements: [Node] = []
+        var contentStart: Int = 0   // `{`/`[` 之后的位置
+        var contentEnd: Int = 0     // `}`/`]` 所在位置
 
         init(kind: Kind, start: Int, chars: [Character]) {
             self.kind = kind
@@ -382,15 +461,17 @@ public enum JSONCEditor {
             let node = Node(kind: .array, start: i, chars: chars)
             var array: [Any] = []
             i += 1
+            node.contentStart = i
             while true {
                 skipTrivia()
                 guard i < chars.count else { throw ParseError() }
-                if chars[i] == "]" { i += 1; break }
+                if chars[i] == "]" { node.contentEnd = i; i += 1; break }
                 let element = try parseValue()
                 array.append(element.value)
+                node.elements.append(element)
                 skipTrivia()
                 if i < chars.count, chars[i] == "," { i += 1; continue }
-                if i < chars.count, chars[i] == "]" { i += 1; break }
+                if i < chars.count, chars[i] == "]" { node.contentEnd = i; i += 1; break }
                 throw ParseError()
             }
             node.end = i
