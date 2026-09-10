@@ -681,7 +681,10 @@ final class GlobalProxyManager: ObservableObject {
             if !wasCancelled, previousConfig.isEnabled == false { runtime.stop() }
             try? adapter.restoreCLIConfig()
             if !activePerNodeIds.isEmpty {
-                await adapter.activatePerNode(activePerNodeIds)
+                let restored = await adapter.activatePerNode(activePerNodeIds)
+                if !restored {
+                    globalProxyManagerLog.error("Failed to restore per-node routes after Gateway rollback (\(self.track.rawValue, privacy: .public))")
+                }
             }
             // Cancellation is an internal hand-off, not a user-facing failure,
             // but it still needs the same direct-route rollback as any error.

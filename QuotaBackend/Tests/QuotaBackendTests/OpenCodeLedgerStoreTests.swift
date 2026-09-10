@@ -165,6 +165,62 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         XCTAssertEqual(entries.count, 2)
     }
 
+    func testLegacyArchiveMigrationPreservesDeletedSessionHistory() async {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = OpenCodeLedgerStore()
+
+        var legacyBucket = CodexAggregateBucket.empty
+        legacyBucket.record(row: CodexRow(
+            dayKey: "2026-01-01",
+            model: "anthropic/claude-sonnet",
+            inputTokens: 12,
+            cacheReadTokens: 0,
+            outputTokens: 0,
+            totalTokens: 12,
+            estimatedCostUsd: 0.01
+        ))
+
+        _ = await store.merge(homeDirectory: home.path, newEntries: [], scanSucceeded: true)
+
+        var needsMigration = await store.needsLegacyArchiveMigration(homeDirectory: home.path)
+        XCTAssertTrue(needsMigration)
+        await store.migrateLegacyArchiveIfNeeded(
+            homeDirectory: home.path,
+            legacyDays: ["2026-01-01": legacyBucket],
+            todayKey: "2026-01-02"
+        )
+
+        let migrated = await store.legacyDays(homeDirectory: home.path)
+        XCTAssertEqual(migrated["2026-01-01"]?.totalTokens, 12)
+        XCTAssertEqual(migrated["2026-01-01"]?.estimatedCostUsd ?? 0, 0.01, accuracy: 0.0001)
+
+        needsMigration = await store.needsLegacyArchiveMigration(homeDirectory: home.path)
+        XCTAssertFalse(needsMigration)
+    }
+
+    func testLegacyArchiveMigrationSkipsToday() async {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = OpenCodeLedgerStore()
+
+        var pastBucket = CodexAggregateBucket.empty
+        pastBucket.record(row: CodexRow(dayKey: "2026-01-01", model: "m", inputTokens: 10, cacheReadTokens: 0, outputTokens: 0, totalTokens: 10, estimatedCostUsd: 0.01))
+        var todayBucket = CodexAggregateBucket.empty
+        todayBucket.record(row: CodexRow(dayKey: "2026-01-02", model: "m", inputTokens: 5, cacheReadTokens: 0, outputTokens: 0, totalTokens: 5, estimatedCostUsd: 0.005))
+
+        await store.migrateLegacyArchiveIfNeeded(
+            homeDirectory: home.path,
+            legacyDays: ["2026-01-01": pastBucket, "2026-01-02": todayBucket],
+            todayKey: "2026-01-02"
+        )
+
+        let migrated = await store.legacyDays(homeDirectory: home.path)
+        XCTAssertEqual(migrated.count, 1)
+        XCTAssertEqual(migrated["2026-01-01"]?.totalTokens, 10)
+        XCTAssertNil(migrated["2026-01-02"])
+    }
+
     // MARK: Helpers
 
     private func temporaryDirectory() -> URL {

@@ -220,18 +220,21 @@ final class OpenCodeNodeStore: ObservableObject {
     }
 
     /// 设置「默认模型节点」并立即重写受管配置（顶层 model 指向它）。
-    /// 传 nil 回到「自动（第一个激活节点）」。
+    /// 传 nil 回到「自动（第一个激活节点）」。先完成配置写入成功后再提交新选择，
+    /// 写入失败时保持原默认节点不变。
     func setOpenCodeDefaultNodeId(_ id: String?) {
         guard openCodeDefaultNodeId != id else { return }
-        openCodeDefaultNodeId = id
-        save()
         if !activeNodeIds.isEmpty {
+            let resolved = id ?? nodes.first(where: { activeNodeIds.contains($0.id) })?.id
             do {
-                try rewriteManagedConfig()
+                try rewriteManagedConfig(defaultNodeIdOverride: resolved)
             } catch {
                 openCodeStoreLog.error("Failed to reapply default model node: \(String(describing: error), privacy: .public)")
+                return
             }
         }
+        openCodeDefaultNodeId = id
+        save()
     }
 
     /// Force SwiftUI to refresh file-resolution labels after an external file edit.
@@ -306,6 +309,56 @@ final class OpenCodeNodeStore: ObservableObject {
         objectWillChange.send()
     }
 
+    /// 批量激活多个节点（一次事务，用于恢复刚停用的每节点路由 / 批量切换）：
+    /// 先启动全部代理进程并升级仅代理标记，再一次性重写受管配置，最后提交激活集合；
+    /// 任一步失败时回收已启动代理、恢复仅代理标记，激活集合保持原值（不留部分激活）。
+    func activate(_ nodes: [OpenCodeNode]) async throws {
+        guard !nodes.isEmpty else { return }
+        // 与全局统一代理互斥：全局启用时由它独占受管层，每节点激活会覆盖全局受管块。
+        if GlobalProxyManager.opencode.config.isEnabled {
+            throw OpenCodeNodeStoreError.managedByGlobalProxy
+        }
+        let newIds = nodes.map(\.id)
+        var upgradedProxyOnly: [String] = []
+        var startedProxyIds: [String] = []
+
+        do {
+            for node in nodes {
+                guard node.proxyEnabled else { continue }
+                // Codex 轨道（responses 透传）启动时强制要求 Key，缺失会让 QuotaServer
+                // 静默不挂载代理路由，请求全 404——提前拦截给出可读错误。
+                if node.protocolType == .openAIResponses, node.apiKey.nilIfBlank == nil {
+                    throw OpenCodeNodeStoreError.proxyRequiresAPIKey
+                }
+                // 该节点此前以仅代理运行：升级为激活（参数没变时进程原地复用，不闪断）。
+                if proxyOnlyNodeIds.remove(node.id) != nil {
+                    upgradedProxyOnly.append(node.id)
+                }
+                try await proxyRuntime.start(node: node)
+                startedProxyIds.append(node.id)
+            }
+            // 一次性重写受管配置；此时尚未提交激活集合，失败只需回收代理进程。
+            try rewriteManagedConfig(using: newIds)
+        } catch {
+            for id in startedProxyIds {
+                proxyRuntime.stop(nodeId: id)
+            }
+            for id in upgradedProxyOnly {
+                proxyOnlyNodeIds.insert(id)
+            }
+            throw error
+        }
+
+        activeNodeIds = newIds
+        for node in nodes {
+            if let index = self.nodes.firstIndex(where: { $0.id == node.id }) {
+                self.nodes[index].lastUsedAt = Date()
+            }
+        }
+        save()
+        objectWillChange.send()
+    }
+
     /// 停用单个节点（issue #66）：委托给批量停用，保证事务一致。
     func deactivate(_ node: OpenCodeNode) throws {
         try deactivate([node.id])
@@ -351,7 +404,7 @@ final class OpenCodeNodeStore: ObservableObject {
 
     /// 顶层 model 指向显式选择的「默认模型节点」（未选择或失效回退第一个激活节点）；`ids` 传候选集合
     /// （停用流程在提交 activeNodeIds 前调用，避免读到未提交状态），nil 用当前 activeNodeIds。
-    private func rewriteManagedConfig(using ids: [String]? = nil) throws {
+    private func rewriteManagedConfig(using ids: [String]? = nil, defaultNodeIdOverride: String? = nil) throws {
         let targetIds = ids ?? activeNodeIds
         let activeNodes = targetIds.compactMap { id in nodes.first { $0.id == id } }
         guard !activeNodes.isEmpty else {
@@ -359,7 +412,9 @@ final class OpenCodeNodeStore: ObservableObject {
             return
         }
         let defaultNodeId: String
-        if let chosen = openCodeDefaultNodeId, targetIds.contains(chosen) {
+        if let chosen = defaultNodeIdOverride, targetIds.contains(chosen) {
+            defaultNodeId = chosen
+        } else if let chosen = openCodeDefaultNodeId, targetIds.contains(chosen) {
             defaultNodeId = chosen
         } else {
             // 回退到「自动」：节点列表中排第一个且处于激活状态的节点。
