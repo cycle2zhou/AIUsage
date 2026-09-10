@@ -15,7 +15,9 @@ private let openCodeCallLedgerLog = Logger(subsystem: "com.aiusage.quotabackend"
 // 语义：
 // - 本次扫描读到的 part 按 `id` upsert（覆盖旧值，处理 part 状态从 running→completed 的更新）；
 // - 账本里本次读不到的 part 不删（处理「删除会话」不丢账）；
-// - 首次启动做一次「全量历史导入」（completedFullHistory 标记），之后只扫请求窗口。
+// - 首次启动做一次「全量历史导入」（fullHistoryImportedAt 标记），之后从
+//   lastSuccessfulScanMillis 游标带安全重叠补采，而不是固定只扫今天；
+// - 只有本次 DB 快照创建、查询、解析全成功（scanSucceeded）才推进游标与全量标记。
 //
 // 聚合：`aggregate` 把明细条目还原为「日 × 类别 × 名称(× server)」的 CallAnalyticsEntry，
 // 与实时 CallEventAccumulator 口径一致（count / outcomeKnownCount / successCount /
@@ -51,6 +53,10 @@ struct OpenCodeCallLedger: Codable, Sendable {
     var updatedAt: String
     var entries: [String: OpenCodeCallLedgerEntry]
     var fullHistoryImportedAt: String?
+    /// 最后一次成功扫描时间（epoch 毫秒）。作为增量补采游标：下次从该位置带安全重叠向前扫，
+    /// 而不是固定扫「今天」，从而补回跨日漏采（如 23:xx 产生、00:xx 才首次同步的调用）。
+    /// nil = 尚未成功扫描过（或旧账本无此字段），需回退到全量或请求窗口。
+    var lastSuccessfulScanMillis: Int64?
 }
 
 final class OpenCodeCallLedgerStore {
@@ -68,11 +74,18 @@ final class OpenCodeCallLedgerStore {
         load().fullHistoryImportedAt != nil
     }
 
+    /// 最后一次成功扫描时间。nil = 尚未成功扫描过。
+    var lastSuccessfulScanDate: Date? {
+        guard let millis = load().lastSuccessfulScanMillis else { return nil }
+        return Date(timeIntervalSince1970: Double(millis) / 1000)
+    }
+
     /// 合并本次扫描到的明细：按 partId upsert，账本里读不到的不删。
-    /// `completedFullHistory` 为 true 时无条件标记全量导入完成（即使本次为空，也避免重复全量扫描）。
+    /// `scanSucceeded` 为 true 时才推进「全量导入完成」标记与补采游标；
+    /// 失败（DB 快照/查询失败、目录不可用）保留原状态，下次重试。
     /// 返回合并后的全部明细（含被删除会话的历史）。
     @discardableResult
-    func merge(newEntries: [OpenCodeCallLedgerEntry], completedFullHistory: Bool) -> [OpenCodeCallLedgerEntry] {
+    func merge(newEntries: [OpenCodeCallLedgerEntry], scanSucceeded: Bool) -> [OpenCodeCallLedgerEntry] {
         var ledger = load()
         var changed = false
 
@@ -83,9 +96,16 @@ final class OpenCodeCallLedgerStore {
             }
         }
 
-        if completedFullHistory, ledger.fullHistoryImportedAt == nil {
-            ledger.fullHistoryImportedAt = SharedFormatters.iso8601String(from: Date())
-            changed = true
+        if scanSucceeded {
+            if ledger.fullHistoryImportedAt == nil {
+                ledger.fullHistoryImportedAt = SharedFormatters.iso8601String(from: Date())
+                changed = true
+            }
+            let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+            if ledger.lastSuccessfulScanMillis != nowMillis {
+                ledger.lastSuccessfulScanMillis = nowMillis
+                changed = true
+            }
         }
 
         if changed {
@@ -164,7 +184,7 @@ final class OpenCodeCallLedgerStore {
             return decoded
         }
 
-        let fresh = OpenCodeCallLedger(version: Self.artifactVersion, updatedAt: "", entries: [:], fullHistoryImportedAt: nil)
+        let fresh = OpenCodeCallLedger(version: Self.artifactVersion, updatedAt: "", entries: [:], fullHistoryImportedAt: nil, lastSuccessfulScanMillis: nil)
         cached = fresh
         return fresh
     }

@@ -48,38 +48,52 @@ public actor CallAnalyticsEngine {
         let openCodeServers = Set(installedMCP.filter { $0.source == .opencode }.map(\.name))
 
         // 首次：扫全历史以冻结所有过去日（之后只扫请求窗口即可，省 IO）。
-        // OpenCode 明细账本与日聚合归档是两套独立的全量导入标记：老用户 archive 可能已完成
-        // 导入，但新增的 opencode 账本尚未全量回填历史，此时仍需全量扫描，否则账本缺历史明细。
-        let needsFullImport = !archive.fullHistoryImported || !opencodeLedger.fullHistoryImported
-        let scanCutoff: Date? = needsFullImport ? nil : cutoff
+        // OpenCode 明细账本与日聚合归档是两套独立的全量导入标记，scan cutoff 也分开计算：
+        // - Claude/Codex 按 archive 自身的全量标记决定是否全量；
+        // - opencode 账本未全量时也全量；已全量则从上次成功扫描游标带安全重叠补采
+        //   （不能固定只扫今天，否则 23:xx 产生、00:xx 才首次同步的调用永久漏掉）。
+        //   两者互不影响，避免因 opencode 一直无法全量（如未安装）导致 Claude/Codex 每轮全量扫。
+        let archiveNeedsFullImport = !archive.fullHistoryImported
+        let ledgerNeedsFullImport = !opencodeLedger.fullHistoryImported
+        let nonOpenCodeScanCutoff: Date? = archiveNeedsFullImport ? nil : cutoff
+        let openCodeScanCutoff = Self.openCodeScanCutoff(
+            ledgerNeedsFullImport: ledgerNeedsFullImport,
+            lastSuccessfulScanDate: opencodeLedger.lastSuccessfulScanDate,
+            fallbackCutoff: cutoff
+        )
 
         let claude = ClaudeCallEventSource(homeDirectory: homeDirectory, timeZone: timeZone, environment: environment)
-            .collect(cutoff: scanCutoff)
+            .collect(cutoff: nonOpenCodeScanCutoff)
         let codex = CodexCallEventSource(homeDirectory: homeDirectory, timeZone: timeZone, environment: environment)
-            .collect(cutoff: scanCutoff)
+            .collect(cutoff: nonOpenCodeScanCutoff)
         let opencodeRaw = OpenCodeCallEventSource(
             homeDirectory: homeDirectory, timeZone: timeZone, environment: environment,
             knownMCPServers: openCodeServers
-        ).collect(cutoff: scanCutoff)
+        ).collect(cutoff: openCodeScanCutoff)
 
         // OpenCode 明细账本：issue #67 调用分析部分。按 part.id upsert、读不到的不删，
         // 使删除 opencode 会话后已记录的调用明细不丢；再从账本聚合回计数条目。
-        let opencodeLedgerEntries = opencodeLedger.merge(newEntries: opencodeRaw.entries, completedFullHistory: needsFullImport)
+        // 只有本次扫描成功（DB 快照创建+查询+解析全成功）才推进游标与全量标记，
+        // 失败或目录不可用保留原状态下次重试。
+        let openCodeScanSucceeded = opencodeRaw.status.available && opencodeRaw.status.errorCode == nil
+        let opencodeLedgerEntries = opencodeLedger.merge(newEntries: opencodeRaw.entries, scanSucceeded: openCodeScanSucceeded)
         let opencodeEntries = OpenCodeCallLedgerStore.aggregate(opencodeLedgerEntries)
 
-        // 实时结果按日分桶（entries 自带 dayKey；Claude 的 agentInvocations 已按天归属）。
-        var computed: [String: CallAnalyticsDayBucket] = [:]
-        for entry in claude.entries { computed[entry.dayKey, default: .empty].entries.append(entry) }
-        for entry in codex.entries { computed[entry.dayKey, default: .empty].entries.append(entry) }
-        for entry in opencodeEntries { computed[entry.dayKey, default: .empty].entries.append(entry) }
+        // 实时结果按日分桶：Claude/Codex 走归档冻结（无明细账本，删 session 靠归档保历史）；
+        // OpenCode 的过去日直接从账本聚合取——账本可补采历史日，而归档的「过去日首写冻结」
+        // 会阻止补采后的展示更新，故不把 OpenCode 条目塞进 archive 冻结。
+        var nonOpenCodeComputed: [String: CallAnalyticsDayBucket] = [:]
+        for entry in claude.entries { nonOpenCodeComputed[entry.dayKey, default: .empty].entries.append(entry) }
+        for entry in codex.entries { nonOpenCodeComputed[entry.dayKey, default: .empty].entries.append(entry) }
         for (day, invs) in claude.agentInvocationsByDay {
-            computed[day, default: .empty].agentInvocations.append(contentsOf: invs)
+            nonOpenCodeComputed[day, default: .empty].agentInvocations.append(contentsOf: invs)
         }
 
-        // 冻结合并 → 拿回全量归档日（含被删 session 的历史日）。
-        let frozenDays = archive.freeze(computed: computed, todayKey: todayKey, completedFullHistory: needsFullImport)
+        // 冻结 Claude/Codex → 拿回全量归档日（含被删 session 的历史日）。
+        let frozenDays = archive.freeze(computed: nonOpenCodeComputed, todayKey: todayKey, completedFullHistory: archiveNeedsFullImport)
 
-        // 从归档取请求范围内的数据展示：删 session 后过去日仍在，今天随实时刷新。
+        // 展示组装：Claude/Codex 从归档（删 session 后过去日仍在，今天随实时刷新）；
+        // OpenCode 从账本聚合（含补采回的历史日，且删 session 不丢账）。
         let lowerKey = cutoff.map { clock.dayKey($0) }
         let upperKey = end.map { clock.dayKey($0) }
         var entries: [CallAnalyticsEntry] = []
@@ -91,6 +105,11 @@ public actor CallAnalyticsEngine {
             for inv in bucket.agentInvocations {
                 agentTotals[AgentInvocationKey(source: inv.source, agent: inv.agent), default: 0] += inv.count
             }
+        }
+        for entry in opencodeEntries {
+            if let lowerKey, entry.dayKey < lowerKey { continue }
+            if let upperKey, entry.dayKey > upperKey { continue }
+            entries.append(entry)
         }
         let agentInvocations = agentTotals.map {
             AgentInvocationCount(source: $0.key.source, agent: $0.key.agent, count: $0.value)
@@ -129,6 +148,24 @@ public actor CallAnalyticsEngine {
         let clock = CallAnalyticsClock(timeZone: timeZone)
         let todayStart = clock.calendar.startOfDay(for: Date())
         _ = computeSnapshot(rangeKey: "today", cutoff: todayStart, end: nil)
+    }
+
+    /// OpenCode 源的扫描下限：未完成全量 → nil（扫全历史）；已完成 → 从上次成功扫描
+    /// 游标带 24h 安全重叠向前补采（覆盖跨日边界漏采）；旧账本无游标时退回请求窗口下限。
+    /// internal（非 private）以便单元测试直接验证补采窗口计算。
+    static func openCodeScanCutoff(
+        ledgerNeedsFullImport: Bool,
+        lastSuccessfulScanDate: Date?,
+        fallbackCutoff: Date?
+    ) -> Date? {
+        if ledgerNeedsFullImport {
+            return nil
+        }
+        if let lastScan = lastSuccessfulScanDate {
+            let overlap: TimeInterval = 24 * 3600
+            return lastScan.addingTimeInterval(-overlap)
+        }
+        return fallbackCutoff
     }
 
     /// agentInvocations 跨日聚合键。

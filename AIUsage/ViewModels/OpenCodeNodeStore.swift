@@ -286,17 +286,29 @@ final class OpenCodeNodeStore: ObservableObject {
         objectWillChange.send()
     }
 
-    /// 停用单个节点（issue #66）：仍有其它激活节点时重写配置，否则还原受管层。
+    /// 停用单个节点（issue #66）：委托给批量停用，保证事务一致。
     func deactivate(_ node: OpenCodeNode) throws {
-        guard activeNodeIds.contains(node.id) else { return }
-        activeNodeIds.removeAll { $0 == node.id }
-        if node.proxyEnabled, !proxyOnlyNodeIds.contains(node.id) {
-            proxyRuntime.stop(nodeId: node.id)
-        }
-        if activeNodeIds.isEmpty {
+        try deactivate([node.id])
+    }
+
+    /// 停用多个节点：一次性计算停用后集合并重写/还原配置，配置成功后再提交激活集合、
+    /// 停代理并持久化；任一步失败时原激活集合、代理进程、有效配置全部不变。
+    func deactivate(_ ids: [String]) throws {
+        let targetSet = Set(ids)
+        guard !targetSet.isEmpty else { return }
+        let remainingIds = activeNodeIds.filter { !targetSet.contains($0) }
+        guard remainingIds.count != activeNodeIds.count else { return }
+        if remainingIds.isEmpty {
             try configManager.restore()
         } else {
-            try rewriteManagedConfig()
+            try rewriteManagedConfig(using: remainingIds)
+        }
+        let removedIds = Set(activeNodeIds).subtracting(remainingIds)
+        activeNodeIds = remainingIds
+        for id in removedIds {
+            guard let node = nodes.first(where: { $0.id == id }),
+                  node.proxyEnabled, !proxyOnlyNodeIds.contains(id) else { continue }
+            proxyRuntime.stop(nodeId: id)
         }
         save()
         objectWillChange.send()
@@ -313,17 +325,24 @@ final class OpenCodeNodeStore: ObservableObject {
         objectWillChange.send()
     }
 
-    /// 全量重写受管配置：把 activeNodeIds 对应的所有节点 provider 块注入 opencode 配置，
-    /// 顶层 model 指向最近激活节点（activeNodeIds 末位）。
-    private func rewriteManagedConfig() throws {
-        let activeNodes = activeNodeIds.compactMap { id in nodes.first { $0.id == id } }
+    /// 顶层 model 指向显式选择的默认节点（未选择或失效回退第一个激活节点）；`ids` 传候选集合
+    /// （停用流程在提交 activeNodeIds 前调用，避免读到未提交状态），nil 用当前 activeNodeIds。
+    private func rewriteManagedConfig(using ids: [String]? = nil) throws {
+        let targetIds = ids ?? activeNodeIds
+        let activeNodes = targetIds.compactMap { id in nodes.first { $0.id == id } }
         guard !activeNodes.isEmpty else {
             try configManager.restore()
             return
         }
+        let defaultNodeId: String
+        if let chosen = globalConfig.openCodeDefaultNodeId, targetIds.contains(chosen) {
+            defaultNodeId = chosen
+        } else {
+            defaultNodeId = activeNodes[0].id
+        }
         try configManager.activate(
             nodes: activeNodes,
-            defaultNodeId: activeNodeIds.last ?? activeNodes[0].id
+            defaultNodeId: defaultNodeId
         ) { [weak self] node in
             self?.commonSettings(for: node)
         }
@@ -390,9 +409,10 @@ final class OpenCodeNodeStore: ObservableObject {
             let proxyActiveIds = activeNodeIds.filter { id in
                 nodes.first(where: { $0.id == id })?.proxyEnabled == true
             }
-            for id in proxyActiveIds {
-                guard let node = nodes.first(where: { $0.id == id }) else { continue }
-                do { try deactivate(node) } catch {
+            if !proxyActiveIds.isEmpty {
+                do {
+                    try deactivate(proxyActiveIds)
+                } catch {
                     openCodeStoreLog.error("Failed to deactivate OpenCode proxy node while auto-restore disabled: \(SensitiveDataRedactor.redactedMessage(for: error), privacy: .public)")
                 }
             }

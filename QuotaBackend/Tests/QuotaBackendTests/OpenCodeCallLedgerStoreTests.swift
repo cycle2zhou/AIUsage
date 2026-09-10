@@ -36,8 +36,8 @@ final class OpenCodeCallLedgerStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
 
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_1"), makeEntry(partId: "prt_2")], completedFullHistory: false)
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_3")], completedFullHistory: false)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1"), makeEntry(partId: "prt_2")], scanSucceeded: true)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_3")], scanSucceeded: true)
 
         let all = store.allEntries()
         XCTAssertEqual(all.count, 3)
@@ -51,10 +51,10 @@ final class OpenCodeCallLedgerStoreTests: XCTestCase {
 
         _ = store.merge(
             newEntries: [makeEntry(partId: "prt_1"), makeEntry(partId: "prt_2"), makeEntry(partId: "prt_3")],
-            completedFullHistory: false
+            scanSucceeded: true
         )
         // 第二批只扫到 prt_1（prt_2、prt_3 对应会话被删除），账本应保留它们。
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], completedFullHistory: false)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], scanSucceeded: true)
 
         let all = store.allEntries()
         XCTAssertEqual(all.count, 3)
@@ -66,9 +66,9 @@ final class OpenCodeCallLedgerStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
 
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_1", success: false, durationMs: 50)], completedFullHistory: false)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1", success: false, durationMs: 50)], scanSucceeded: true)
         // 同一条 part 状态从 running 更新为 completed：应覆盖旧值而非新增一条。
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_1", success: true, durationMs: 200)], completedFullHistory: false)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1", success: true, durationMs: 200)], scanSucceeded: true)
 
         let all = store.allEntries()
         XCTAssertEqual(all.count, 1)
@@ -123,7 +123,7 @@ final class OpenCodeCallLedgerStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
 
-        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], completedFullHistory: true)
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], scanSucceeded: true)
         XCTAssertTrue(store.fullHistoryImported)
 
         // 重新实例化（模拟重启）后标记仍在。
@@ -136,7 +136,48 @@ final class OpenCodeCallLedgerStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: tempRoot) }
         let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
 
-        _ = store.merge(newEntries: [], completedFullHistory: true)
+        _ = store.merge(newEntries: [], scanSucceeded: true)
         XCTAssertTrue(store.fullHistoryImported)
+    }
+
+    func testScanFailureDoesNotMarkFullHistoryImport() {
+        let tempRoot = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
+
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], scanSucceeded: false)
+        XCTAssertFalse(store.fullHistoryImported)
+        XCTAssertNil(store.lastSuccessfulScanDate)
+
+        let reopened = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
+        XCTAssertFalse(reopened.fullHistoryImported)
+        XCTAssertNil(reopened.lastSuccessfulScanDate)
+    }
+
+    func testScanSuccessMarksFullHistoryAndAdvancesCursor() {
+        let tempRoot = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
+
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1")], scanSucceeded: true)
+        XCTAssertTrue(store.fullHistoryImported)
+        XCTAssertNotNil(store.lastSuccessfulScanDate)
+
+        let reopened = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
+        XCTAssertTrue(reopened.fullHistoryImported)
+        XCTAssertNotNil(reopened.lastSuccessfulScanDate)
+    }
+
+    func testScanFailureThenSuccessRecoversFullHistory() {
+        let tempRoot = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+        let store = OpenCodeCallLedgerStore(homeDirectory: tempRoot.path)
+
+        _ = store.merge(newEntries: [], scanSucceeded: false)
+        XCTAssertFalse(store.fullHistoryImported)
+
+        _ = store.merge(newEntries: [makeEntry(partId: "prt_1"), makeEntry(partId: "prt_2")], scanSucceeded: true)
+        XCTAssertTrue(store.fullHistoryImported)
+        XCTAssertEqual(store.allEntries().count, 2)
     }
 }
