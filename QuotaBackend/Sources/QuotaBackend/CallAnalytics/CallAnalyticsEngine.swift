@@ -94,6 +94,10 @@ public actor CallAnalyticsEngine {
 
         // 展示组装：Claude/Codex 从归档（删 session 后过去日仍在，今天随实时刷新）；
         // OpenCode 从账本聚合（含补采回的历史日，且删 session 不丢账）。
+        // 旧归档 OpenCode 去重：账本完成全量回填后，旧归档的 OpenCode 条目按「日」让位账本
+        // （账本优先，避免与首次回填重复）；账本未回填的日（删会话独有）保留旧归档 OpenCode。
+        let ledgerOpenCodeDayKeys = Set(opencodeEntries.map { $0.dayKey })
+        let ledgerFullyImported = opencodeLedger.fullHistoryImported
         let lowerKey = cutoff.map { clock.dayKey($0) }
         let upperKey = end.map { clock.dayKey($0) }
         var entries: [CallAnalyticsEntry] = []
@@ -101,7 +105,13 @@ public actor CallAnalyticsEngine {
         for (day, bucket) in frozenDays {
             if let lowerKey, day < lowerKey { continue }
             if let upperKey, day > upperKey { continue }
-            entries.append(contentsOf: bucket.entries)
+            let deduped = Self.deduplicateLegacyOpenCode(
+                entries: bucket.entries,
+                day: day,
+                ledgerFullyImported: ledgerFullyImported,
+                ledgerOpenCodeDayKeys: ledgerOpenCodeDayKeys
+            )
+            entries.append(contentsOf: deduped)
             for inv in bucket.agentInvocations {
                 agentTotals[AgentInvocationKey(source: inv.source, agent: inv.agent), default: 0] += inv.count
             }
@@ -166,6 +176,19 @@ public actor CallAnalyticsEngine {
             return lastScan.addingTimeInterval(-overlap)
         }
         return fallbackCutoff
+    }
+
+    /// 旧归档 OpenCode 条目去重：账本完成全量回填后，旧归档中与账本聚合重叠的 OpenCode 条目
+    /// 让位账本（避免与首次回填双计）；账本未回填的日（删会话独有）保留旧归档 OpenCode。
+    /// internal（非 private）以便单元测试验证去重规则。
+    static func deduplicateLegacyOpenCode(
+        entries: [CallAnalyticsEntry],
+        day: String,
+        ledgerFullyImported: Bool,
+        ledgerOpenCodeDayKeys: Set<String>
+    ) -> [CallAnalyticsEntry] {
+        guard ledgerFullyImported, ledgerOpenCodeDayKeys.contains(day) else { return entries }
+        return entries.filter { $0.source != .opencode }
     }
 
     /// agentInvocations 跨日聚合键。

@@ -51,8 +51,8 @@ protocol GlobalProxyTrackAdapter {
     /// 本轨「每节点激活」当前激活 id 列表（启用全局前先停掉，干净交接）。
     func currentPerNodeActiveIds() -> [String]
     func deactivatePerNode(_ ids: [String]) async
-    /// Gateway 接管失败时恢复刚才停用的每节点路由。
-    func activatePerNode(_ ids: [String]) async
+    /// Gateway 接管失败时恢复刚才停用的每节点路由；返回 false 表示恢复失败（存在未恢复的节点）。
+    func activatePerNode(_ ids: [String]) async -> Bool
 }
 
 extension GlobalProxyTrackAdapter {
@@ -155,10 +155,11 @@ struct CodexGlobalProxyAdapter: GlobalProxyTrackAdapter {
         }
     }
 
-    func activatePerNode(_ ids: [String]) async {
+    func activatePerNode(_ ids: [String]) async -> Bool {
         for id in ids {
             await ProxyViewModel.shared.activateConfiguration(id)
         }
+        return true
     }
 }
 
@@ -360,11 +361,12 @@ struct ClaudeGlobalProxyAdapter: GlobalProxyTrackAdapter {
         }
     }
 
-    func activatePerNode(_ ids: [String]) async {
-        guard track == .claude else { return }
+    func activatePerNode(_ ids: [String]) async -> Bool {
+        guard track == .claude else { return false }
         for id in ids {
             await ProxyViewModel.shared.activateConfiguration(id)
         }
+        return true
     }
 }
 
@@ -518,10 +520,14 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
         try? OpenCodeNodeStore.shared.deactivate(ids)
     }
 
-    func activatePerNode(_ ids: [String]) async {
-        for id in ids {
-            guard let node = node(id) else { continue }
-            try? await OpenCodeNodeStore.shared.activate(node)
+    func activatePerNode(_ ids: [String]) async -> Bool {
+        let nodes = ids.compactMap { node($0) }
+        guard nodes.count == ids.count else { return false }
+        do {
+            try await OpenCodeNodeStore.shared.activate(nodes)
+            return true
+        } catch {
+            return false
         }
     }
 }

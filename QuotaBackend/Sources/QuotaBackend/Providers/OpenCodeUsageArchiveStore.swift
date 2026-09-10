@@ -67,6 +67,11 @@ actor OpenCodeUsageArchiveStore {
 
     // MARK: Disk
 
+    /// 只读旧归档全部日（一次性迁移用，不触发写）。
+    func days(homeDirectory: String) -> [String: CodexAggregateBucket] {
+        load(homeDirectory).days
+    }
+
     private func load(_ homeDirectory: String) -> CodexUsageArchive {
         if let archive = archives[homeDirectory], loaded.contains(homeDirectory) { return archive }
         loaded.insert(homeDirectory)

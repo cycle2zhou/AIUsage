@@ -35,4 +35,57 @@ final class CallAnalyticsEngineTests: XCTestCase {
 
         XCTAssertEqual(cutoff, fallback)
     }
+
+    func testLegacyCallArchiveDoesNotDoubleCountAfterLedgerMigration() {
+        let opencodeBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1
+        )
+        let claudeBash = CallAnalyticsEntry(
+            source: .claude, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1
+        )
+
+        let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
+            entries: [opencodeBash, claudeBash],
+            day: "2026-01-01",
+            ledgerFullyImported: true,
+            ledgerOpenCodeDayKeys: ["2026-01-01"]
+        )
+
+        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.source, .claude)
+    }
+
+    func testLegacyOpenCodeEntryPreservedWhenLedgerHasNoThatDay() {
+        let opencodeBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1
+        )
+
+        let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
+            entries: [opencodeBash],
+            day: "2026-01-01",
+            ledgerFullyImported: true,
+            ledgerOpenCodeDayKeys: []
+        )
+
+        XCTAssertEqual(deduped.count, 1)
+    }
+
+    func testLegacyOpenCodeEntryKeptWhenLedgerNotFullyImported() {
+        let opencodeBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1
+        )
+
+        let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
+            entries: [opencodeBash],
+            day: "2026-01-01",
+            ledgerFullyImported: false,
+            ledgerOpenCodeDayKeys: ["2026-01-01"]
+        )
+
+        XCTAssertEqual(deduped.count, 1)
+    }
 }

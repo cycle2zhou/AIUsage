@@ -58,6 +58,10 @@ struct OpenCodeLedger: Codable, Sendable {
     var fullHistoryImportedAt: String?
     /// 最后一次成功扫描时间（epoch 毫秒），作为增量补采游标。nil = 尚未成功扫描过。
     var lastSuccessfulScanMillis: Int64?
+    /// 旧 usage-archive 一次性迁入的历史日（冻结快照，账本聚合覆盖重叠日，删会话独有日据此保留）。nil = 尚未迁移。
+    var legacyDays: [String: CodexAggregateBucket]?
+    /// 旧 usage-archive 迁移完成时间（ISO8601）。nil = 尚未迁移。
+    var legacyArchiveMigratedAt: String?
 }
 
 actor OpenCodeLedgerStore {
@@ -121,6 +125,39 @@ actor OpenCodeLedgerStore {
     /// 读取账本全部明细（不触发写）。
     func allEntries(homeDirectory: String) -> [OpenCodeLedgerEntry] {
         Array(load(homeDirectory).entries.values)
+    }
+
+    /// 旧 usage-archive 是否尚未迁移（幂等判断）。
+    func needsLegacyArchiveMigration(homeDirectory: String) -> Bool {
+        load(homeDirectory).legacyArchiveMigratedAt == nil
+    }
+
+    /// 一次性把旧 usage-archive 的「过去日」迁入账本（幂等，迁移完成状态持久化）：
+    /// 迁入后设置 legacyArchiveMigratedAt 标记，旧归档不再参与展示，改由账本负责迁移后的增量。
+    /// 今天由账本实时维护，不迁入（旧归档的今天快照会过期）。
+    func migrateLegacyArchiveIfNeeded(
+        homeDirectory: String,
+        legacyDays: [String: CodexAggregateBucket],
+        todayKey: String
+    ) {
+        var ledger = load(homeDirectory)
+        guard ledger.legacyArchiveMigratedAt == nil else { return }
+
+        var migrated: [String: CodexAggregateBucket] = [:]
+        for (day, bucket) in legacyDays where day != todayKey {
+            migrated[day] = bucket
+        }
+
+        ledger.legacyDays = migrated
+        ledger.legacyArchiveMigratedAt = SharedFormatters.iso8601String(from: Date())
+        ledger.updatedAt = SharedFormatters.iso8601String(from: Date())
+        ledgers[homeDirectory] = ledger
+        save(homeDirectory, ledger)
+    }
+
+    /// 已迁入的历史日（冻结快照）。展示时账本聚合覆盖重叠日，删会话独有日据此保留。
+    func legacyDays(homeDirectory: String) -> [String: CodexAggregateBucket] {
+        load(homeDirectory).legacyDays ?? [:]
     }
 
     /// 从明细聚合日桶（复用 CodexAggregateBucket.record）。
