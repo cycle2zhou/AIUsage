@@ -19,9 +19,8 @@ public struct OpenCodeCostProvider: ProviderFetcher {
     let timeZone: TimeZone
     let environment: [String: String]
 
-    /// 永久每日归档（每个 home 一张，按 homeDirectory 区分以隔离测试 / 多配置）。
-    static let archive = OpenCodeUsageArchiveStore()
     /// 独立明细账本（message 级，按 message.id 去重增量），issue #67 的持久真相源。
+    /// 展示层直接用账本聚合，旧的 OpenCodeUsageArchiveStore 日归档已退役（避免「过去日冻结」阻止补采更新）。
     static let ledger = OpenCodeLedgerStore()
     static let defaultScanDays = 30
 
@@ -39,11 +38,16 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         let now = Date()
         let todayKey = dayKey(now)
 
-        // 首次（账本从未完成全量）触发全量扫描以回填账本全部明细；之后只扫窗口。
+        // 首次（账本从未完成全量）触发全量扫描以回填账本全部明细；之后从上次成功游标带安全重叠补采。
         let shouldImportFullHistory = await Self.ledger.consumeFullHistoryImportRequest(homeDirectory: homeDirectory)
-        let sinceMillis: Int64? = shouldImportFullHistory ? nil : scanWindowStartMillis(now: now)
+        let lastSuccessfulScanMillis = await Self.ledger.lastSuccessfulScanMillis(homeDirectory: homeDirectory)
+        let sinceMillis = Self.scanSinceMillis(
+            shouldImportFullHistory: shouldImportFullHistory,
+            lastSuccessfulScanMillis: lastSuccessfulScanMillis,
+            fallbackMillis: scanWindowStartMillis(now: now)
+        )
 
-        // 1) 读库明细 → 账本合并（upsert 增量；OpenCode 未安装/版本过旧时跳过，账本仍有历史）。
+        // 1) 读库明细 → 账本合并（upsert 增量；OpenCode 未安装/快照失败时不推进账本游标，下次重试）。
         let dataDirectory = resolveDataDirectory()
         if let dataDirectory {
             let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
@@ -59,21 +63,15 @@ public struct OpenCodeCostProvider: ProviderFetcher {
             await Self.ledger.merge(
                 homeDirectory: homeDirectory,
                 newEntries: entries,
-                completedFullHistory: shouldImportFullHistory
+                scanSucceeded: true
             )
         }
         relieveMallocPressure()
 
-        // 2) 账本聚合 → 冻结归档：昨日前首写冻结、今天从账本累积覆盖（删除会话后账本不删，统计不丢）。
+        // 2) 账本聚合直接作为展示源（账本即真相源，含补采回填的历史；不再走 archive 冻结避免旧值覆盖新账）。
         let ledgerEntries = await Self.ledger.allEntries(homeDirectory: homeDirectory)
         let sessionIds = Set(ledgerEntries.map { $0.sessionId })
-        let computed = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
-        let dbDays = await Self.archive.freeze(
-            homeDirectory: homeDirectory,
-            computed: computed,
-            todayKey: todayKey,
-            completedFullHistory: shouldImportFullHistory
-        )
+        let dbDays = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
         // 3) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，
         //    同节点同模型与 db 直连自动并入同一行；db 侧已排除裸全局 provider，两源互斥不双计）。
         //    即使本地 db 为空，只要有代理用量也照常呈现。
@@ -166,6 +164,23 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         usage.source = source
         return usage
     }
+
+    /// 扫描窗口起点（epoch 毫秒）：全量 → nil；已有游标 → 游标带 24h 安全重叠补采；无游标 → 回退默认窗口。
+    static func scanSinceMillis(
+        shouldImportFullHistory: Bool,
+        lastSuccessfulScanMillis: Int64?,
+        fallbackMillis: Int64
+    ) -> Int64? {
+        if shouldImportFullHistory {
+            return nil
+        }
+        if let lastScan = lastSuccessfulScanMillis {
+            return lastScan - scanOverlapMillis
+        }
+        return fallbackMillis
+    }
+
+    static let scanOverlapMillis: Int64 = 24 * 3600 * 1000
 
     func relieveMallocPressure() {
         #if canImport(Darwin)
