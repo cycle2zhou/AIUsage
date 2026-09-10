@@ -460,7 +460,13 @@ final class OpenCodeConfigManager {
             let current = try readObject(atPath: targetPath) ?? [:]
             try fileManager.createDirectory(atPath: backupRoot, withIntermediateDirectories: true)
             if managedKeysPresent(in: current) {
-                try writeObject(stripManagedEntries(from: current), toPath: path, restrictPermissions: true)
+                let stripped = stripManagedEntries(from: current)
+                let rawText = String(data: data, encoding: .utf8) ?? ""
+                if let patched = JSONCEditor.merge(baseText: rawText, target: stripped) {
+                    try writeText(patched, toPath: path, restrictPermissions: true)
+                } else {
+                    try writeObject(stripped, toPath: path, restrictPermissions: true)
+                }
             } else {
                 try copyFileVerbatim(from: targetPath, to: path)
             }
