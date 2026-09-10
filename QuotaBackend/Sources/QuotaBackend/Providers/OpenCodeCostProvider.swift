@@ -78,7 +78,6 @@ public struct OpenCodeCostProvider: ProviderFetcher {
 
         // 3) 一次性把旧 usage-archive 迁入账本为「残差」（幂等），迁移后旧归档退役。
         //    迁移前置：账本已完成全量历史导入（否则残差不完整）；残差 = max(旧归档 - 迁移时账本快照, 0)。
-        //    展示恒为「当前账本 + 残差」：完全重叠不重复、完全删除不丢、同日部分删除也不丢。
         if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory),
            await Self.ledger.isFullHistoryImported(homeDirectory: homeDirectory) {
             let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
@@ -89,11 +88,21 @@ public struct OpenCodeCostProvider: ProviderFetcher {
                 todayKey: todayKey
             )
         }
-        let legacyResidualDays = await Self.ledger.legacyResidualDays(homeDirectory: homeDirectory)
-        let mergedDays = dbDays.merging(legacyResidualDays) { ledger, residual in
-            var merged = ledger
-            merged.merge(residual)
-            return merged
+        // 展示：迁移完成后恒为「账本 + 持久化残差」（完全重叠不重复、完全删除不丢、同日部分删除也不丢）；
+        //      迁移 pending（账本尚未完成全量回填，或数据目录暂不可用）时过去日回退原旧归档
+        //      （账本覆盖重叠日、删会话独有日保留），保证旧归档历史仍可见且迁移状态保持 pending。
+        let mergedDays: [String: CodexAggregateBucket]
+        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory) {
+            let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
+            let archivePastDays = archiveDays.filter { $0.key != todayKey }
+            mergedDays = archivePastDays.merging(dbDays) { _, ledger in ledger }
+        } else {
+            let legacyResidualDays = await Self.ledger.legacyResidualDays(homeDirectory: homeDirectory)
+            mergedDays = dbDays.merging(legacyResidualDays) { ledger, residual in
+                var merged = ledger
+                merged.merge(residual)
+                return merged
+            }
         }
 
         // 4) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，

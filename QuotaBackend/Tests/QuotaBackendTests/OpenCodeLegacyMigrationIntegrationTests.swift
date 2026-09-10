@@ -53,6 +53,52 @@ final class OpenCodeLegacyMigrationIntegrationTests: XCTestCase {
         XCTAssertEqual(second.extra["overall.totalTokens"]?.value as? Int, 110)
     }
 
+    // MARK: - 用量：数据目录暂不可用时旧归档回退、迁移保持 pending
+
+    func testPendingMigrationKeepsLegacyUsageVisibleWhenDataDirectoryUnavailable() async throws {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let utc = TimeZone(identifier: "UTC")!
+        let legacyDayMillis = utcMillis(year: 2026, month: 1, day: 10)
+
+        // 升级前旧归档：2026-01-10 = 12 tokens / $0.01。
+        try writeLegacyUsageArchive(home: home, dayKey: "2026-01-10", inputTokens: 12, cost: 0.01)
+
+        // OpenCode 数据目录暂不可用：XDG_DATA_HOME 指向无 opencode.db 的目录（home 下所有候选目录均无 db）。
+        let xdg = home.appendingPathComponent("xdg", isDirectory: true)
+        let provider = OpenCodeCostProvider(
+            homeDirectory: home.path,
+            timeZone: utc,
+            environment: ["XDG_DATA_HOME": xdg.path]
+        )
+
+        // 第一次 fetch：数据目录不可用，过去日回退旧归档展示 12（不报 no_usage_data），迁移保持 pending。
+        let first = try await provider.fetchUsage()
+        XCTAssertEqual(first.extra["overall.totalTokens"]?.value as? Int, 12)
+        XCTAssertTrue(await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path))
+        XCTAssertFalse(await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path))
+        XCTAssertTrue(await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path).isEmpty)
+
+        // 数据库恢复：opencode.db 含昨日 8 tokens（4 tokens 会话已删）→ 残差 12-8=4，展示 12 不重复不丢。
+        let dbDir = xdg.appendingPathComponent("opencode", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        let dbPath = dbDir.appendingPathComponent("opencode.db").path
+        try executeSQL(
+            """
+            CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+            INSERT INTO message VALUES ('msg_1', 'sess_1', \(legacyDayMillis), '\(messageData(tokens: 8, cost: 0.01))');
+            """,
+            databasePath: dbPath
+        )
+
+        // 第二次 fetch：全量导入完成 + 残差迁移，展示 = 账本 8 + 残差 4 = 12。
+        let second = try await provider.fetchUsage()
+        XCTAssertEqual(second.extra["overall.totalTokens"]?.value as? Int, 12)
+        XCTAssertFalse(await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path))
+        XCTAssertTrue(await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path))
+        XCTAssertEqual(await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path)["2026-01-10"]?.totalTokens, 4)
+    }
+
     // MARK: - 调用：同日部分删除不丢、迁移后新增累加
 
     func testLegacyCallArchivePartialSameDayDeletionIsPreserved() async throws {
