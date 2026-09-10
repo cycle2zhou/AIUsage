@@ -47,6 +47,9 @@ final class OpenCodeNodeStore: ObservableObject {
     /// 通用配置片段（与 Claude 页同构）：激活时按节点合并策略深合并进受管层，
     /// 受管块与用户原文之间的中间层。持久化于 ~/.config/aiusage/opencode-global-config.json。
     @Published var globalConfig: GlobalConfig = .empty
+    /// 多节点同时激活时顶层 model 指向的「默认模型节点」（独立于通用配置）。
+    /// nil 表示未显式选择，重写受管配置时回退到第一个激活节点。
+    @Published private(set) var openCodeDefaultNodeId: String?
 
     private let configManager = OpenCodeConfigManager.shared
     private let proxyRuntime = OpenCodeProxyRuntime.shared
@@ -58,6 +61,7 @@ final class OpenCodeNodeStore: ObservableObject {
         var activeNodeId: String?
         var activeNodeIds: [String]?
         var proxyOnlyNodeIds: [String]?
+        var openCodeDefaultNodeId: String?
     }
 
     private static let storeVersion = 1
@@ -215,6 +219,21 @@ final class OpenCodeNodeStore: ObservableObject {
         }
     }
 
+    /// 设置「默认模型节点」并立即重写受管配置（顶层 model 指向它）。
+    /// 传 nil 回到「自动（第一个激活节点）」。
+    func setOpenCodeDefaultNodeId(_ id: String?) {
+        guard openCodeDefaultNodeId != id else { return }
+        openCodeDefaultNodeId = id
+        save()
+        if !activeNodeIds.isEmpty {
+            do {
+                try rewriteManagedConfig()
+            } catch {
+                openCodeStoreLog.error("Failed to reapply default model node: \(String(describing: error), privacy: .public)")
+            }
+        }
+    }
+
     /// Force SwiftUI to refresh file-resolution labels after an external file edit.
     func refreshConfigContext() {
         objectWillChange.send()
@@ -325,7 +344,7 @@ final class OpenCodeNodeStore: ObservableObject {
         objectWillChange.send()
     }
 
-    /// 顶层 model 指向显式选择的默认节点（未选择或失效回退第一个激活节点）；`ids` 传候选集合
+    /// 顶层 model 指向显式选择的「默认模型节点」（未选择或失效回退第一个激活节点）；`ids` 传候选集合
     /// （停用流程在提交 activeNodeIds 前调用，避免读到未提交状态），nil 用当前 activeNodeIds。
     private func rewriteManagedConfig(using ids: [String]? = nil) throws {
         let targetIds = ids ?? activeNodeIds
@@ -335,7 +354,7 @@ final class OpenCodeNodeStore: ObservableObject {
             return
         }
         let defaultNodeId: String
-        if let chosen = globalConfig.openCodeDefaultNodeId, targetIds.contains(chosen) {
+        if let chosen = openCodeDefaultNodeId, targetIds.contains(chosen) {
             defaultNodeId = chosen
         } else {
             defaultNodeId = activeNodes[0].id
@@ -541,6 +560,7 @@ final class OpenCodeNodeStore: ObservableObject {
             nodes = file.nodes
             activeNodeIds = file.activeNodeIds ?? (file.activeNodeId.map { [$0] } ?? [])
             proxyOnlyNodeIds = Set(file.proxyOnlyNodeIds ?? [])
+            openCodeDefaultNodeId = file.openCodeDefaultNodeId
             sortNodes()
             backfillProviderSlugs()
         } catch {
@@ -566,7 +586,8 @@ final class OpenCodeNodeStore: ObservableObject {
             nodes: nodes,
             activeNodeId: activeNodeIds.last,
             activeNodeIds: activeNodeIds.isEmpty ? nil : activeNodeIds,
-            proxyOnlyNodeIds: proxyOnlyNodeIds.isEmpty ? nil : Array(proxyOnlyNodeIds).sorted()
+            proxyOnlyNodeIds: proxyOnlyNodeIds.isEmpty ? nil : Array(proxyOnlyNodeIds).sorted(),
+            openCodeDefaultNodeId: openCodeDefaultNodeId
         )
         do {
             let dir = (Self.storePath as NSString).deletingLastPathComponent
