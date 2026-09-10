@@ -75,9 +75,12 @@ final class OpenCodeLegacyMigrationIntegrationTests: XCTestCase {
         // 第一次 fetch：数据目录不可用，过去日回退旧归档展示 12（不报 no_usage_data），迁移保持 pending。
         let first = try await provider.fetchUsage()
         XCTAssertEqual(first.extra["overall.totalTokens"]?.value as? Int, 12)
-        XCTAssertTrue(await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path))
-        XCTAssertFalse(await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path))
-        XCTAssertTrue(await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path).isEmpty)
+        let stillNeedsMigration = await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path)
+        XCTAssertTrue(stillNeedsMigration)
+        let importedAfterFirst = await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path)
+        XCTAssertFalse(importedAfterFirst)
+        let residualAfterFirst = await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path)
+        XCTAssertTrue(residualAfterFirst.isEmpty)
 
         // 数据库恢复：opencode.db 含昨日 8 tokens（4 tokens 会话已删）→ 残差 12-8=4，展示 12 不重复不丢。
         let dbDir = xdg.appendingPathComponent("opencode", isDirectory: true)
@@ -94,9 +97,12 @@ final class OpenCodeLegacyMigrationIntegrationTests: XCTestCase {
         // 第二次 fetch：全量导入完成 + 残差迁移，展示 = 账本 8 + 残差 4 = 12。
         let second = try await provider.fetchUsage()
         XCTAssertEqual(second.extra["overall.totalTokens"]?.value as? Int, 12)
-        XCTAssertFalse(await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path))
-        XCTAssertTrue(await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path))
-        XCTAssertEqual(await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path)["2026-01-10"]?.totalTokens, 4)
+        let needsMigrationAfterRecovery = await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path)
+        XCTAssertFalse(needsMigrationAfterRecovery)
+        let importedAfterRecovery = await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path)
+        XCTAssertTrue(importedAfterRecovery)
+        let residualAfterRecovery = await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path)
+        XCTAssertEqual(residualAfterRecovery["2026-01-10"]?.totalTokens, 4)
     }
 
     // MARK: - 调用：同日部分删除不丢、迁移后新增累加
