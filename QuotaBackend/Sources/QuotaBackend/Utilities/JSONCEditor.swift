@@ -156,14 +156,20 @@ public enum JSONCEditor {
         // 删除：原文中存在但目标已无的键（连同其分隔逗号/前导空白到下一个键）。
         // 若所有成员都将被删除，则跳过逐个删除，交由 appendInsertEdits 整体重排，避免残留前导空白。
         let allMembersDeleted = !node.members.isEmpty && node.members.allSatisfy { target[$0.key] == nil }
+        // 是否存在新增键：删除最后一个成员时据此决定是否前移吞逗号。
+        // 若吞逗号，delStart 会落在 lastKept 值结束处，与 appendInsertEdits 以 lastKept.node.end 为起点的插入区间重叠，导致 applyEdits 返回 nil、merge 失败并退化到丢注释的 writeObject。
+        let hasInserts = target.keys.contains { existing[$0] == nil }
         if !allMembersDeleted {
             for (idx, member) in node.members.enumerated() where target[member.key] == nil {
                 if idx + 1 < node.members.count {
                     // 中间成员：删除到下一个成员起始位置（含当前成员的尾逗号）。
                     let delEnd = node.members[idx + 1].memberStart
                     edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
+                } else if hasInserts {
+                    // 最后一个成员且后续有新增键：不吞前导逗号，把逗号/空白留给插入锚点一并替换，避免区间重叠。
+                    edits.append(Edit(start: member.memberStart, end: member.node.end, replacement: ""))
                 } else {
-                    // 最后一个成员：前向跳过空白找到前导逗号，删除到值结束位置（保留对象闭合前导换行）。
+                    // 最后一个成员且无新增键：前向跳过空白找到前导逗号，删除到值结束位置（保留对象闭合前导换行）。
                     var delStart = member.memberStart
                     var i = member.memberStart - 1
                     while i >= 0 && isWhitespace(node.chars[i]) { i -= 1 }
@@ -214,6 +220,12 @@ public enum JSONCEditor {
             // 若 lastKept 后紧跟尾随逗号（原文不规范），把它一并替换，避免逗号残留到新增键之后。
             if insertEnd < node.chars.count, node.chars[insertEnd] == "," {
                 insertEnd += 1
+            }
+            // 若 lastKept 之后还有被删除的成员，插入区间需扩展到首个被删成员起始，把中间的逗号/空白一并替换，
+            // 与「删除最后成员（不吞逗号）」的区间衔接（[lastKept.node.end, memberStart) + [memberStart, ...)），避免重叠和空行残留。
+            if let keptIdx = node.members.firstIndex(where: { $0.key == lastKept.key }),
+               keptIdx + 1 < node.members.count {
+                insertEnd = node.members[keptIdx + 1].memberStart
             }
             var text = ""
             for (key, value) in sortedInserts {

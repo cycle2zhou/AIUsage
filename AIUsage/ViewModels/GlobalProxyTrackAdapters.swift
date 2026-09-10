@@ -515,12 +515,7 @@ struct OpenCodeGlobalProxyAdapter: GlobalProxyTrackAdapter {
     }
 
     func deactivatePerNode(_ ids: [String]) async {
-        let store = OpenCodeNodeStore.shared
-        for id in ids {
-            if let node = store.nodes.first(where: { $0.id == id }) {
-                try? store.deactivate(node)
-            }
-        }
+        try? OpenCodeNodeStore.shared.deactivate(ids)
     }
 
     func activatePerNode(_ ids: [String]) async {

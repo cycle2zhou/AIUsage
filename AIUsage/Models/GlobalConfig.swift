@@ -9,6 +9,15 @@ import Foundation
 struct GlobalConfig {
     var enabled: Bool
     var settings: [String: Any]
+    /// OpenCode 代理「通用配置」中显式选择的默认节点（顶层 model 指向它）。
+    /// nil 表示未显式选择，重写受管配置时回退到第一个激活节点。
+    var openCodeDefaultNodeId: String?
+
+    init(enabled: Bool, settings: [String: Any], openCodeDefaultNodeId: String? = nil) {
+        self.enabled = enabled
+        self.settings = settings
+        self.openCodeDefaultNodeId = openCodeDefaultNodeId
+    }
 
     static let empty = GlobalConfig(enabled: false, settings: [:])
 
@@ -35,10 +44,13 @@ struct GlobalConfig {
     // MARK: - Serialize / Deserialize
 
     func toFileData() throws -> Data {
-        let root: [String: Any] = [
+        var root: [String: Any] = [
             "enabled": enabled,
             "settings": settings,
         ]
+        if let nodeId = openCodeDefaultNodeId {
+            root["openCodeDefaultNodeId"] = nodeId
+        }
         return try JSONSerialization.data(
             withJSONObject: root,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
@@ -51,6 +63,7 @@ struct GlobalConfig {
         }
         let enabled = root["enabled"] as? Bool ?? false
         let settings = root["settings"] as? [String: Any] ?? [:]
-        return GlobalConfig(enabled: enabled, settings: settings)
+        let openCodeDefaultNodeId = root["openCodeDefaultNodeId"] as? String
+        return GlobalConfig(enabled: enabled, settings: settings, openCodeDefaultNodeId: openCodeDefaultNodeId)
     }
 }

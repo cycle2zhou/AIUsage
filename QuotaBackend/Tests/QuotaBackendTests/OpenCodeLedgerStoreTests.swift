@@ -11,7 +11,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         _ = await store.merge(homeDirectory: home.path, newEntries: [
             entry(id: "msg_1", tokens: 100),
             entry(id: "msg_2", tokens: 200),
-        ], completedFullHistory: true)
+        ], scanSucceeded: true)
 
         var days = await aggregatedDays(store, home: home.path)
         XCTAssertEqual(days["2026-01-01"]?.totalTokens, 300)
@@ -21,7 +21,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         _ = await store.merge(homeDirectory: home.path, newEntries: [
             entry(id: "msg_3", tokens: 300),
             entry(id: "msg_2", tokens: 250),
-        ], completedFullHistory: false)
+        ], scanSucceeded: true)
 
         days = await aggregatedDays(store, home: home.path)
         XCTAssertEqual(days["2026-01-01"]?.totalTokens, 650)  // 100 + 250 + 300
@@ -36,12 +36,12 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         _ = await store.merge(homeDirectory: home.path, newEntries: [
             entry(id: "msg_1", tokens: 100),
             entry(id: "msg_2", tokens: 200),
-        ], completedFullHistory: true)
+        ], scanSucceeded: true)
 
         // 模拟删除会话：第二批只含 msg_3（msg_1 已从 opencode.db 消失）
         _ = await store.merge(homeDirectory: home.path, newEntries: [
             entry(id: "msg_3", tokens: 300),
-        ], completedFullHistory: false)
+        ], scanSucceeded: true)
 
         let days = await aggregatedDays(store, home: home.path)
         XCTAssertEqual(days["2026-01-01"]?.totalTokens, 600)  // 100 + 200 + 300（msg_1 不丢）
@@ -52,8 +52,8 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: home) }
         let store = OpenCodeLedgerStore()
 
-        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1", tokens: 100)], completedFullHistory: true)
-        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1", tokens: 250)], completedFullHistory: false)
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1", tokens: 100)], scanSucceeded: true)
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1", tokens: 250)], scanSucceeded: true)
 
         let days = await aggregatedDays(store, home: home.path)
         XCTAssertEqual(days["2026-01-01"]?.totalTokens, 250)  // 更新覆盖，不重复计数
@@ -68,7 +68,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         _ = await store.merge(homeDirectory: home.path, newEntries: [
             entry(id: "msg_1", day: "2026-01-01", tokens: 100),
             entry(id: "msg_2", day: "2026-01-02", tokens: 200),
-        ], completedFullHistory: true)
+        ], scanSucceeded: true)
 
         let days = await aggregatedDays(store, home: home.path)
         XCTAssertEqual(days.count, 2)
@@ -85,7 +85,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
             entry(id: "msg_1", day: "2026-01-01", model: "anthropic/sonnet", tokens: 100, cost: 0.01),
             entry(id: "msg_2", day: "2026-01-01", model: "anthropic/sonnet", tokens: 200, cost: 0.02),
             entry(id: "msg_3", day: "2026-01-01", model: "openai/gpt-5", tokens: 300, cost: 0.03),
-        ], completedFullHistory: true)
+        ], scanSucceeded: true)
 
         let days = await aggregatedDays(store, home: home.path)
         let day = days["2026-01-01"]
@@ -104,7 +104,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         var shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
         XCTAssertTrue(shouldImport)
 
-        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1")], completedFullHistory: true)
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1")], scanSucceeded: true)
 
         shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
         XCTAssertFalse(shouldImport)
@@ -116,10 +116,53 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         let store = OpenCodeLedgerStore()
 
         // 全量导入但 db 为空（无 assistant 消息）→ 仍标记已完成，避免每次重复全量扫描。
-        _ = await store.merge(homeDirectory: home.path, newEntries: [], completedFullHistory: true)
+        _ = await store.merge(homeDirectory: home.path, newEntries: [], scanSucceeded: true)
 
         let shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
         XCTAssertFalse(shouldImport)
+    }
+
+    func testScanFailureDoesNotMarkFullHistoryImport() async {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = OpenCodeLedgerStore()
+
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1")], scanSucceeded: false)
+
+        let shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
+        XCTAssertTrue(shouldImport)
+        let cursor = await store.lastSuccessfulScanMillis(homeDirectory: home.path)
+        XCTAssertNil(cursor)
+    }
+
+    func testScanSuccessMarksFullHistoryAndAdvancesCursor() async {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = OpenCodeLedgerStore()
+
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1")], scanSucceeded: true)
+
+        let shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
+        XCTAssertFalse(shouldImport)
+        let cursor = await store.lastSuccessfulScanMillis(homeDirectory: home.path)
+        XCTAssertNotNil(cursor)
+    }
+
+    func testScanFailureThenSuccessRecoversFullHistory() async {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let store = OpenCodeLedgerStore()
+
+        _ = await store.merge(homeDirectory: home.path, newEntries: [], scanSucceeded: false)
+        var shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
+        XCTAssertTrue(shouldImport)
+
+        _ = await store.merge(homeDirectory: home.path, newEntries: [entry(id: "msg_1"), entry(id: "msg_2")], scanSucceeded: true)
+        shouldImport = await store.consumeFullHistoryImportRequest(homeDirectory: home.path)
+        XCTAssertFalse(shouldImport)
+
+        let entries = await store.allEntries(homeDirectory: home.path)
+        XCTAssertEqual(entries.count, 2)
     }
 
     // MARK: Helpers

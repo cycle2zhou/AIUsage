@@ -56,6 +56,8 @@ struct OpenCodeLedger: Codable, Sendable {
     var updatedAt: String
     var entries: [String: OpenCodeLedgerEntry]
     var fullHistoryImportedAt: String?
+    /// 最后一次成功扫描时间（epoch 毫秒），作为增量补采游标。nil = 尚未成功扫描过。
+    var lastSuccessfulScanMillis: Int64?
 }
 
 actor OpenCodeLedgerStore {
@@ -69,13 +71,20 @@ actor OpenCodeLedgerStore {
         load(homeDirectory).fullHistoryImportedAt == nil
     }
 
+    /// 最后一次成功扫描时间（epoch 毫秒）。nil = 尚未成功扫描过（或旧账本无此字段）。
+    func lastSuccessfulScanMillis(homeDirectory: String) -> Int64? {
+        load(homeDirectory).lastSuccessfulScanMillis
+    }
+
     /// 按 messageId upsert 合并本次读到的明细；账本中读不到的条目保留（删除不丢）。
+    /// `scanSucceeded` 为 true 时才推进「全量导入完成」标记与补采游标；
+    /// 失败（DB 快照/查询失败、目录不可用）保留原状态，下次重试。
     /// 返回合并后的全部明细，供调用方聚合与 sessionCount 统计。
     @discardableResult
     func merge(
         homeDirectory: String,
         newEntries: [OpenCodeLedgerEntry],
-        completedFullHistory: Bool
+        scanSucceeded: Bool
     ) -> [OpenCodeLedgerEntry] {
         var ledger = load(homeDirectory)
         var changed = false
@@ -87,9 +96,16 @@ actor OpenCodeLedgerStore {
             }
         }
 
-        if completedFullHistory, ledger.fullHistoryImportedAt == nil {
-            ledger.fullHistoryImportedAt = SharedFormatters.iso8601String(from: Date())
-            changed = true
+        if scanSucceeded {
+            if ledger.fullHistoryImportedAt == nil {
+                ledger.fullHistoryImportedAt = SharedFormatters.iso8601String(from: Date())
+                changed = true
+            }
+            let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
+            if ledger.lastSuccessfulScanMillis != nowMillis {
+                ledger.lastSuccessfulScanMillis = nowMillis
+                changed = true
+            }
         }
 
         if changed {
