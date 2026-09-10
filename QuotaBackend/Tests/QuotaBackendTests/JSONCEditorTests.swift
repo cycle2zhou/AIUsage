@@ -204,6 +204,35 @@ final class JSONCEditorTests: XCTestCase {
         XCTAssertEqualJSON(parse(out), target)
     }
 
+    func testRemovesLastStaleManagedKeyAndInsertsNewKeepingComments() {
+        let base = """
+        {
+          // 顶层注释
+          "model": "aiusage-old/m",
+          "provider": {
+            // provider 注释
+            "openrouter": { "npm": "@ai-sdk/openai-compatible" },
+            "aiusage-old": { "npm": "@ai-sdk/openai-compatible" }
+          }
+        }
+        """
+        let target: [String: Any] = [
+            "model": "aiusage-new/m",
+            "provider": [
+                "openrouter": ["npm": "@ai-sdk/openai-compatible"],
+                "aiusage-new": managedEntry("New", base: "https://n/v1"),
+            ],
+        ]
+        let result = JSONCEditor.merge(baseText: base, target: target)
+        XCTAssertNotNil(result, "删除最后一个受管键 + 新增受管键不应导致 merge 失败（重叠编辑）")
+        let out = result!
+        XCTAssertTrue(out.contains("// 顶层注释"), "顶层注释应保留")
+        XCTAssertTrue(out.contains("// provider 注释"), "provider 内注释应保留")
+        XCTAssertFalse(out.contains("aiusage-old"), "陈旧受管键应被移除")
+        XCTAssertTrue(out.contains("aiusage-new"), "新受管键应插入")
+        XCTAssertEqualJSON(parse(out), target)
+    }
+
     // MARK: - Safety / Fallback
 
     func testReturnsNilForUnparsableBase() {
