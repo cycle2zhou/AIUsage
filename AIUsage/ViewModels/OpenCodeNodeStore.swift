@@ -48,7 +48,7 @@ final class OpenCodeNodeStore: ObservableObject {
     /// 受管块与用户原文之间的中间层。持久化于 ~/.config/aiusage/opencode-global-config.json。
     @Published var globalConfig: GlobalConfig = .empty
     /// 多节点同时激活时顶层 model 指向的「默认模型节点」（独立于通用配置）。
-    /// nil 表示未显式选择，重写受管配置时回退到第一个激活节点。
+    /// nil 表示未显式选择，重写受管配置时回退到节点列表中排第一个的激活节点。
     @Published private(set) var openCodeDefaultNodeId: String?
 
     private let configManager = OpenCodeConfigManager.shared
@@ -254,6 +254,7 @@ final class OpenCodeNodeStore: ObservableObject {
             proxyRuntime.stop(nodeId: node.id)
         }
         activeNodeIds.removeAll()
+        openCodeDefaultNodeId = nil
         save()
         objectWillChange.send()
     }
@@ -324,6 +325,9 @@ final class OpenCodeNodeStore: ObservableObject {
         }
         let removedIds = Set(activeNodeIds).subtracting(remainingIds)
         activeNodeIds = remainingIds
+        if let chosen = openCodeDefaultNodeId, removedIds.contains(chosen) {
+            openCodeDefaultNodeId = nil
+        }
         for id in removedIds {
             guard let node = nodes.first(where: { $0.id == id }),
                   node.proxyEnabled, !proxyOnlyNodeIds.contains(id) else { continue }
@@ -340,6 +344,7 @@ final class OpenCodeNodeStore: ObservableObject {
             proxyRuntime.stop(nodeId: node.id)
         }
         activeNodeIds.removeAll()
+        openCodeDefaultNodeId = nil
         save()
         objectWillChange.send()
     }
@@ -357,7 +362,8 @@ final class OpenCodeNodeStore: ObservableObject {
         if let chosen = openCodeDefaultNodeId, targetIds.contains(chosen) {
             defaultNodeId = chosen
         } else {
-            defaultNodeId = activeNodes[0].id
+            // 回退到「自动」：节点列表中排第一个且处于激活状态的节点。
+            defaultNodeId = nodes.first(where: { targetIds.contains($0.id) })?.id ?? activeNodes[0].id
         }
         try configManager.activate(
             nodes: activeNodes,
