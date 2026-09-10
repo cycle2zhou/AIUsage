@@ -15,52 +15,58 @@ struct OpenCodeGlobalConfigSection: View {
     private var targetFileName: String { store.configFileName }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "gearshape.2.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(.orange)
+        VStack(spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: "gearshape.2.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.orange)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L("Common Config", "通用配置"))
-                    .font(.subheadline.weight(.semibold))
-                Text(keyCount > 0
-                     ? L("\(keyCount) top-level keys", "\(keyCount) 个顶层字段")
-                     : L("Not configured", "未配置"))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            Button {
-                showingEditor = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "pencil.line")
-                        .font(.system(size: 10, weight: .semibold))
-                    Text(L("Edit", "编辑"))
-                        .font(.system(size: 11, weight: .semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L("Common Config", "通用配置"))
+                        .font(.subheadline.weight(.semibold))
+                    Text(keyCount > 0
+                         ? L("\(keyCount) top-level keys", "\(keyCount) 个顶层字段")
+                         : L("Not configured", "未配置"))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Capsule().fill(Color.primary.opacity(0.06)))
-            }
-            .buttonStyle(.plain)
 
-            Toggle(isOn: Binding(
-                get: { store.globalConfig.enabled },
-                set: { newValue in
-                    store.globalConfig.enabled = newValue
-                    store.saveGlobalConfig()
-                }
-            )) {
-                Text(L("Merge", "合并"))
-                    .font(.caption.weight(.medium))
+                Spacer()
+
+                Button {
+                    showingEditor = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "pencil.line")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(L("Edit", "编辑"))
+                            .font(.system(size: 11, weight: .semibold))
+                    }
                     .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Capsule().fill(Color.primary.opacity(0.06)))
+                }
+                .buttonStyle(.plain)
+
+                Toggle(isOn: Binding(
+                    get: { store.globalConfig.enabled },
+                    set: { newValue in
+                        store.globalConfig.enabled = newValue
+                        store.saveGlobalConfig()
+                    }
+                )) {
+                    Text(L("Merge", "合并"))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
             }
-            .toggleStyle(.switch)
-            .controlSize(.small)
+
+            if !store.activeNodeIds.isEmpty {
+                defaultNodePicker
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
@@ -74,6 +80,34 @@ struct OpenCodeGlobalConfigSection: View {
         )
         .sheet(isPresented: $showingEditor) {
             OpenCodeGlobalConfigEditorView(store: store)
+        }
+    }
+
+    private var defaultNodePicker: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "star.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(.yellow)
+            Text(L("Default model node", "默认模型节点"))
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Picker("", selection: Binding<String?>(
+                get: { store.globalConfig.openCodeDefaultNodeId },
+                set: { newValue in
+                    store.globalConfig.openCodeDefaultNodeId = newValue
+                    store.saveGlobalConfig()
+                }
+            )) {
+                Text(L("Auto (first active node)", "自动（第一个激活节点）"))
+                    .tag(nil as String?)
+                ForEach(store.activeNodes, id: \.id) { node in
+                    Text(node.displayName).tag(node.id as String?)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
         }
     }
 }
