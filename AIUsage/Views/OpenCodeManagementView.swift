@@ -53,6 +53,9 @@ struct OpenCodeManagementView: View {
                         actionBar
                         OpenCodeOverviewStrip(store: store, statsStore: statsStore, proxyRuntime: proxyRuntime)
                         OpenCodeGlobalConfigSection(store: store)
+                        if !store.activeNodeIds.isEmpty {
+                            OpenCodeDefaultModelNodeSection(store: store)
+                        }
                         OpenCodeGlobalProxySection()
                         nodeListSection
                     }
