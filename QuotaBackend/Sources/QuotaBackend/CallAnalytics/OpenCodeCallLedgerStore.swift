@@ -57,10 +57,15 @@ struct OpenCodeCallLedger: Codable, Sendable {
     /// 而不是固定扫「今天」，从而补回跨日漏采（如 23:xx 产生、00:xx 才首次同步的调用）。
     /// nil = 尚未成功扫描过（或旧账本无此字段），需回退到全量或请求窗口。
     var lastSuccessfulScanMillis: Int64?
+    /// 旧调用归档迁移后的「残差」（max(旧归档 - 迁移时账本聚合, 0)，聚合后条目冻结）。
+    /// 迁移后展示恒为「当前账本 + 残差」，完全重叠不重复、完全删除不丢、同日部分删除也不丢。nil = 尚未迁移。
+    var legacyResidualEntries: [CallAnalyticsEntry]?
+    /// 旧调用归档迁移完成时间（ISO8601）。nil = 尚未迁移。
+    var legacyArchiveMigratedAt: String?
 }
 
 final class OpenCodeCallLedgerStore {
-    static let artifactVersion = 1
+    static let artifactVersion = 2
 
     private let homeDirectory: String
     private var cached: OpenCodeCallLedger?
@@ -78,6 +83,16 @@ final class OpenCodeCallLedgerStore {
     var lastSuccessfulScanDate: Date? {
         guard let millis = load().lastSuccessfulScanMillis else { return nil }
         return Date(timeIntervalSince1970: Double(millis) / 1000)
+    }
+
+    /// 旧调用归档是否已迁移完成。
+    var legacyArchiveMigrated: Bool {
+        load().legacyArchiveMigratedAt != nil
+    }
+
+    /// 已迁入的旧调用归档残差（聚合后条目冻结）。迁移后叠加到账本聚合之上展示。
+    var legacyResidual: [CallAnalyticsEntry] {
+        load().legacyResidualEntries ?? []
     }
 
     /// 合并本次扫描到的明细：按 partId upsert，账本里读不到的不删。
@@ -172,6 +187,18 @@ final class OpenCodeCallLedgerStore {
         }
     }
 
+    /// 一次性把旧调用归档的残差写入账本（幂等）。迁移完成后旧归档的 OpenCode 条目不再参与展示，
+    /// 改由「当前账本 + 残差」承担；后续新调用继续由账本正常增量。
+    func migrateLegacyResidual(_ entries: [CallAnalyticsEntry]) {
+        var ledger = load()
+        guard ledger.legacyArchiveMigratedAt == nil else { return }
+        ledger.legacyResidualEntries = entries
+        ledger.legacyArchiveMigratedAt = SharedFormatters.iso8601String(from: Date())
+        ledger.updatedAt = SharedFormatters.iso8601String(from: Date())
+        cached = ledger
+        save(ledger)
+    }
+
     // MARK: - Disk
 
     private func load() -> OpenCodeCallLedger {
@@ -184,7 +211,7 @@ final class OpenCodeCallLedgerStore {
             return decoded
         }
 
-        let fresh = OpenCodeCallLedger(version: Self.artifactVersion, updatedAt: "", entries: [:], fullHistoryImportedAt: nil, lastSuccessfulScanMillis: nil)
+        let fresh = OpenCodeCallLedger(version: Self.artifactVersion, updatedAt: "", entries: [:], fullHistoryImportedAt: nil, lastSuccessfulScanMillis: nil, legacyResidualEntries: nil, legacyArchiveMigratedAt: nil)
         cached = fresh
         return fresh
     }

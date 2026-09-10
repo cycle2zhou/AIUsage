@@ -94,10 +94,13 @@ public actor CallAnalyticsEngine {
 
         // 展示组装：Claude/Codex 从归档（删 session 后过去日仍在，今天随实时刷新）；
         // OpenCode 从账本聚合（含补采回的历史日，且删 session 不丢账）。
-        // 旧归档 OpenCode 去重：账本完成全量回填后，旧归档的 OpenCode 条目按「日」让位账本
-        // （账本优先，避免与首次回填重复）；账本未回填的日（删会话独有）保留旧归档 OpenCode。
-        let ledgerOpenCodeDayKeys = Set(opencodeEntries.map { $0.dayKey })
-        let ledgerFullyImported = opencodeLedger.fullHistoryImported
+        // 旧归档 OpenCode 迁移：账本完成全量回填后，一次性计算旧归档相对账本聚合的残差并持久化，
+        // 之后旧归档 OpenCode 条目让位残差（不再参与展示），避免与首次回填双计，也避免丢删会话独有记录。
+        if opencodeLedger.fullHistoryImported && !opencodeLedger.legacyArchiveMigrated {
+            let legacyOpenCodeEntries = frozenDays.values.flatMap { $0.entries }.filter { $0.source == .opencode }
+            opencodeLedger.migrateLegacyResidual(Self.residualEntries(legacy: legacyOpenCodeEntries, ledger: opencodeEntries))
+        }
+        let residualOpenCodeEntries = opencodeLedger.legacyResidual
         let lowerKey = cutoff.map { clock.dayKey($0) }
         let upperKey = end.map { clock.dayKey($0) }
         var entries: [CallAnalyticsEntry] = []
@@ -107,9 +110,7 @@ public actor CallAnalyticsEngine {
             if let upperKey, day > upperKey { continue }
             let deduped = Self.deduplicateLegacyOpenCode(
                 entries: bucket.entries,
-                day: day,
-                ledgerFullyImported: ledgerFullyImported,
-                ledgerOpenCodeDayKeys: ledgerOpenCodeDayKeys
+                legacyArchiveMigrated: opencodeLedger.legacyArchiveMigrated
             )
             entries.append(contentsOf: deduped)
             for inv in bucket.agentInvocations {
@@ -117,6 +118,11 @@ public actor CallAnalyticsEngine {
             }
         }
         for entry in opencodeEntries {
+            if let lowerKey, entry.dayKey < lowerKey { continue }
+            if let upperKey, entry.dayKey > upperKey { continue }
+            entries.append(entry)
+        }
+        for entry in residualOpenCodeEntries {
             if let lowerKey, entry.dayKey < lowerKey { continue }
             if let upperKey, entry.dayKey > upperKey { continue }
             entries.append(entry)
@@ -178,17 +184,64 @@ public actor CallAnalyticsEngine {
         return fallbackCutoff
     }
 
-    /// 旧归档 OpenCode 条目去重：账本完成全量回填后，旧归档中与账本聚合重叠的 OpenCode 条目
-    /// 让位账本（避免与首次回填双计）；账本未回填的日（删会话独有）保留旧归档 OpenCode。
+    /// 旧归档 OpenCode 条目去重：迁移完成后旧归档的 OpenCode 条目全部让位残差（不再参与展示）；
+    /// 迁移前（账本尚未完成全量回填或迁移尚未发生）保留原样，保证删会话独有历史不丢。
     /// internal（非 private）以便单元测试验证去重规则。
     static func deduplicateLegacyOpenCode(
         entries: [CallAnalyticsEntry],
-        day: String,
-        ledgerFullyImported: Bool,
-        ledgerOpenCodeDayKeys: Set<String>
+        legacyArchiveMigrated: Bool
     ) -> [CallAnalyticsEntry] {
-        guard ledgerFullyImported, ledgerOpenCodeDayKeys.contains(day) else { return entries }
+        guard legacyArchiveMigrated else { return entries }
         return entries.filter { $0.source != .opencode }
+    }
+
+    /// 计算旧归档 OpenCode 条目相对「迁移时账本聚合」的残差：`max(legacy - ledger, 0)`。
+    /// 按 day+source+kind+name+server+agent 逐字段相减钳制（count 与成功率/耗时可累加分量各自独立）。
+    /// internal（非 private）以便单元测试验证残差计算。
+    static func residualEntries(
+        legacy: [CallAnalyticsEntry],
+        ledger: [CallAnalyticsEntry]
+    ) -> [CallAnalyticsEntry] {
+        struct Key: Hashable {
+            let dayKey: String
+            let source: CallSourceKind
+            let kind: CallKind
+            let name: String
+            let server: String?
+            let agent: String?
+        }
+        var ledgerByKey: [Key: CallAnalyticsEntry] = [:]
+        for entry in ledger {
+            ledgerByKey[Key(dayKey: entry.dayKey, source: entry.source, kind: entry.kind, name: entry.name, server: entry.server, agent: entry.agent)] = entry
+        }
+
+        var residual: [CallAnalyticsEntry] = []
+        for legacyEntry in legacy {
+            let key = Key(dayKey: legacyEntry.dayKey, source: legacyEntry.source, kind: legacyEntry.kind, name: legacyEntry.name, server: legacyEntry.server, agent: legacyEntry.agent)
+            let ledgerEntry = ledgerByKey[key]
+            let count = max(legacyEntry.count - (ledgerEntry?.count ?? 0), 0)
+            let outcomeKnown = max(legacyEntry.outcomeKnownCount - (ledgerEntry?.outcomeKnownCount ?? 0), 0)
+            let success = max(legacyEntry.successCount - (ledgerEntry?.successCount ?? 0), 0)
+            let durationSamples = max(legacyEntry.durationSampleCount - (ledgerEntry?.durationSampleCount ?? 0), 0)
+            let durationMs = max(legacyEntry.durationMsTotal - (ledgerEntry?.durationMsTotal ?? 0), 0)
+            if count == 0, outcomeKnown == 0, success == 0, durationSamples == 0, durationMs == 0 {
+                continue
+            }
+            residual.append(CallAnalyticsEntry(
+                source: legacyEntry.source,
+                kind: legacyEntry.kind,
+                name: legacyEntry.name,
+                server: legacyEntry.server,
+                agent: legacyEntry.agent,
+                dayKey: legacyEntry.dayKey,
+                count: count,
+                outcomeKnownCount: outcomeKnown,
+                successCount: success,
+                durationSampleCount: durationSamples,
+                durationMsTotal: durationMs
+            ))
+        }
+        return residual
     }
 
     /// agentInvocations 跨日聚合键。

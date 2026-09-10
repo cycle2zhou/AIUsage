@@ -188,10 +188,11 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         await store.migrateLegacyArchiveIfNeeded(
             homeDirectory: home.path,
             legacyDays: ["2026-01-01": legacyBucket],
+            ledgerSnapshotDays: [:],
             todayKey: "2026-01-02"
         )
 
-        let migrated = await store.legacyDays(homeDirectory: home.path)
+        let migrated = await store.legacyResidualDays(homeDirectory: home.path)
         XCTAssertEqual(migrated["2026-01-01"]?.totalTokens, 12)
         XCTAssertEqual(migrated["2026-01-01"]?.estimatedCostUsd ?? 0, 0.01, accuracy: 0.0001)
 
@@ -212,13 +213,84 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         await store.migrateLegacyArchiveIfNeeded(
             homeDirectory: home.path,
             legacyDays: ["2026-01-01": pastBucket, "2026-01-02": todayBucket],
+            ledgerSnapshotDays: [:],
             todayKey: "2026-01-02"
         )
 
-        let migrated = await store.legacyDays(homeDirectory: home.path)
+        let migrated = await store.legacyResidualDays(homeDirectory: home.path)
         XCTAssertEqual(migrated.count, 1)
         XCTAssertEqual(migrated["2026-01-01"]?.totalTokens, 10)
         XCTAssertNil(migrated["2026-01-02"])
+    }
+
+    func testResidualDaysPreservesPartialSameDayDeletion() {
+        // 旧归档某日 100 tokens，同日账本快照仅 60（部分会话已删）→ 残差 40，不丢已删会话的差额。
+        var legacyBucket = CodexAggregateBucket.empty
+        legacyBucket.record(row: CodexRow(
+            dayKey: "2026-01-01", model: "anthropic/claude-sonnet",
+            inputTokens: 100, cacheReadTokens: 0, outputTokens: 0,
+            totalTokens: 100, estimatedCostUsd: 0.10
+        ))
+        var ledgerBucket = CodexAggregateBucket.empty
+        ledgerBucket.record(row: CodexRow(
+            dayKey: "2026-01-01", model: "anthropic/claude-sonnet",
+            inputTokens: 60, cacheReadTokens: 0, outputTokens: 0,
+            totalTokens: 60, estimatedCostUsd: 0.06
+        ))
+
+        let residual = OpenCodeLedgerStore.residualDays(
+            legacyDays: ["2026-01-01": legacyBucket],
+            ledgerSnapshotDays: ["2026-01-01": ledgerBucket],
+            todayKey: "2026-01-02"
+        )
+
+        XCTAssertEqual(residual["2026-01-01"]?.totalTokens, 40)
+        XCTAssertEqual(residual["2026-01-01"]?.inputTokens, 40)
+        XCTAssertEqual(residual["2026-01-01"]?.estimatedCostUsd ?? 0, 0.04, accuracy: 0.0001)
+        XCTAssertEqual(residual["2026-01-01"]?.models["anthropic/claude-sonnet"]?.totalTokens, 40)
+    }
+
+    func testResidualDaysKeepsFullyDeletedDay() {
+        // 旧归档某日 100，账本快照该日无记录（会话完全删除）→ 残差 100，不丢。
+        var legacyBucket = CodexAggregateBucket.empty
+        legacyBucket.record(row: CodexRow(
+            dayKey: "2026-01-01", model: "anthropic/claude-sonnet",
+            inputTokens: 100, cacheReadTokens: 0, outputTokens: 0,
+            totalTokens: 100, estimatedCostUsd: 0.10
+        ))
+
+        let residual = OpenCodeLedgerStore.residualDays(
+            legacyDays: ["2026-01-01": legacyBucket],
+            ledgerSnapshotDays: [:],
+            todayKey: "2026-01-02"
+        )
+
+        XCTAssertEqual(residual["2026-01-01"]?.totalTokens, 100)
+        XCTAssertEqual(residual["2026-01-01"]?.usageRows, 1)
+    }
+
+    func testResidualDaysEmptyWhenFullyOverlapped() {
+        // 旧归档某日 60，账本快照同日 60（完全重叠）→ 无残差，避免重复计数。
+        var legacyBucket = CodexAggregateBucket.empty
+        legacyBucket.record(row: CodexRow(
+            dayKey: "2026-01-01", model: "anthropic/claude-sonnet",
+            inputTokens: 60, cacheReadTokens: 0, outputTokens: 0,
+            totalTokens: 60, estimatedCostUsd: 0.06
+        ))
+        var ledgerBucket = CodexAggregateBucket.empty
+        ledgerBucket.record(row: CodexRow(
+            dayKey: "2026-01-01", model: "anthropic/claude-sonnet",
+            inputTokens: 60, cacheReadTokens: 0, outputTokens: 0,
+            totalTokens: 60, estimatedCostUsd: 0.06
+        ))
+
+        let residual = OpenCodeLedgerStore.residualDays(
+            legacyDays: ["2026-01-01": legacyBucket],
+            ledgerSnapshotDays: ["2026-01-01": ledgerBucket],
+            todayKey: "2026-01-02"
+        )
+
+        XCTAssertNil(residual["2026-01-01"])
     }
 
     // MARK: Helpers

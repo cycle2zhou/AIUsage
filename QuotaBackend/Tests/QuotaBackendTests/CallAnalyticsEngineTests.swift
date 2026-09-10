@@ -36,7 +36,7 @@ final class CallAnalyticsEngineTests: XCTestCase {
         XCTAssertEqual(cutoff, fallback)
     }
 
-    func testLegacyCallArchiveDoesNotDoubleCountAfterLedgerMigration() {
+    func testLegacyOpenCodeDroppedWhenLegacyArchiveMigrated() {
         let opencodeBash = CallAnalyticsEntry(
             source: .opencode, kind: .builtin, name: "bash", server: nil,
             dayKey: "2026-01-01", count: 1
@@ -48,16 +48,14 @@ final class CallAnalyticsEngineTests: XCTestCase {
 
         let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
             entries: [opencodeBash, claudeBash],
-            day: "2026-01-01",
-            ledgerFullyImported: true,
-            ledgerOpenCodeDayKeys: ["2026-01-01"]
+            legacyArchiveMigrated: true
         )
 
         XCTAssertEqual(deduped.count, 1)
         XCTAssertEqual(deduped.first?.source, .claude)
     }
 
-    func testLegacyOpenCodeEntryPreservedWhenLedgerHasNoThatDay() {
+    func testLegacyOpenCodeEntryKeptWhenArchiveNotMigrated() {
         let opencodeBash = CallAnalyticsEntry(
             source: .opencode, kind: .builtin, name: "bash", server: nil,
             dayKey: "2026-01-01", count: 1
@@ -65,27 +63,67 @@ final class CallAnalyticsEngineTests: XCTestCase {
 
         let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
             entries: [opencodeBash],
-            day: "2026-01-01",
-            ledgerFullyImported: true,
-            ledgerOpenCodeDayKeys: []
+            legacyArchiveMigrated: false
         )
 
         XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(deduped.first?.source, .opencode)
     }
 
-    func testLegacyOpenCodeEntryKeptWhenLedgerNotFullyImported() {
-        let opencodeBash = CallAnalyticsEntry(
+    func testResidualEntriesPreservesPartialSameDayDeletion() {
+        let legacyBash = CallAnalyticsEntry(
             source: .opencode, kind: .builtin, name: "bash", server: nil,
-            dayKey: "2026-01-01", count: 1
+            dayKey: "2026-01-01", count: 2, outcomeKnownCount: 2, successCount: 2
+        )
+        let legacyRead = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "read", server: nil,
+            dayKey: "2026-01-01", count: 1, outcomeKnownCount: 1, successCount: 1
+        )
+        let ledgerBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1, outcomeKnownCount: 1, successCount: 1
         )
 
-        let deduped = CallAnalyticsEngine.deduplicateLegacyOpenCode(
-            entries: [opencodeBash],
-            day: "2026-01-01",
-            ledgerFullyImported: false,
-            ledgerOpenCodeDayKeys: ["2026-01-01"]
+        let residual = CallAnalyticsEngine.residualEntries(
+            legacy: [legacyBash, legacyRead],
+            ledger: [ledgerBash]
         )
 
-        XCTAssertEqual(deduped.count, 1)
+        XCTAssertEqual(residual.count, 2)
+        XCTAssertEqual(residual.first(where: { $0.name == "bash" })?.count, 1)
+        XCTAssertEqual(residual.first(where: { $0.name == "read" })?.count, 1)
+    }
+
+    func testResidualEntriesEmptyWhenFullyOverlapped() {
+        let legacyBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1, outcomeKnownCount: 1, successCount: 1
+        )
+        let ledgerBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 1, outcomeKnownCount: 1, successCount: 1
+        )
+
+        let residual = CallAnalyticsEngine.residualEntries(
+            legacy: [legacyBash],
+            ledger: [ledgerBash]
+        )
+
+        XCTAssertTrue(residual.isEmpty)
+    }
+
+    func testResidualEntriesKeepsFullyDeletedEntry() {
+        let legacyBash = CallAnalyticsEntry(
+            source: .opencode, kind: .builtin, name: "bash", server: nil,
+            dayKey: "2026-01-01", count: 2, outcomeKnownCount: 2, successCount: 2
+        )
+
+        let residual = CallAnalyticsEngine.residualEntries(
+            legacy: [legacyBash],
+            ledger: []
+        )
+
+        XCTAssertEqual(residual.count, 1)
+        XCTAssertEqual(residual.first?.count, 2)
     }
 }

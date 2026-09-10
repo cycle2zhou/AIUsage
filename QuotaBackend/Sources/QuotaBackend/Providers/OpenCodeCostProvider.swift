@@ -76,18 +76,25 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         let sessionIds = Set(ledgerEntries.map { $0.sessionId })
         let dbDays = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
 
-        // 3) 一次性把旧 usage-archive 的历史日迁入账本（幂等），迁移后旧归档退役：
-        //    删会话独有的历史日保留在 legacyDays，账本聚合覆盖重叠日（不双计）。
-        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory) {
+        // 3) 一次性把旧 usage-archive 迁入账本为「残差」（幂等），迁移后旧归档退役。
+        //    迁移前置：账本已完成全量历史导入（否则残差不完整）；残差 = max(旧归档 - 迁移时账本快照, 0)。
+        //    展示恒为「当前账本 + 残差」：完全重叠不重复、完全删除不丢、同日部分删除也不丢。
+        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory),
+           await Self.ledger.isFullHistoryImported(homeDirectory: homeDirectory) {
             let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
             await Self.ledger.migrateLegacyArchiveIfNeeded(
                 homeDirectory: homeDirectory,
                 legacyDays: archiveDays,
+                ledgerSnapshotDays: dbDays,
                 todayKey: todayKey
             )
         }
-        let legacyDays = await Self.ledger.legacyDays(homeDirectory: homeDirectory)
-        let mergedDays = legacyDays.merging(dbDays) { _, ledger in ledger }
+        let legacyResidualDays = await Self.ledger.legacyResidualDays(homeDirectory: homeDirectory)
+        let mergedDays = dbDays.merging(legacyResidualDays) { ledger, residual in
+            var merged = ledger
+            merged.merge(residual)
+            return merged
+        }
 
         // 4) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，
         //    同节点同模型与 db 直连自动并入同一行；db 侧已排除裸全局 provider，两源互斥不双计）。
