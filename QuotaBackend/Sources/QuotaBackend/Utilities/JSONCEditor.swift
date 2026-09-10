@@ -160,22 +160,40 @@ public enum JSONCEditor {
         // 若吞逗号，delStart 会落在 lastKept 值结束处，与 appendInsertEdits 以 lastKept.node.end 为起点的插入区间重叠，导致 applyEdits 返回 nil、merge 失败并退化到丢注释的 writeObject。
         let hasInserts = target.keys.contains { existing[$0] == nil }
         if !allMembersDeleted {
-            for (idx, member) in node.members.enumerated() where target[member.key] == nil {
-                if idx + 1 < node.members.count {
-                    // 中间成员：删除到下一个成员起始位置（含当前成员的尾逗号）。
-                    let delEnd = node.members[idx + 1].memberStart
-                    edits.append(Edit(start: member.memberStart, end: delEnd, replacement: ""))
-                } else if hasInserts {
-                    // 最后一个成员且后续有新增键：不吞前导逗号，把逗号/空白留给插入锚点一并替换，避免区间重叠。
-                    edits.append(Edit(start: member.memberStart, end: member.node.end, replacement: ""))
-                } else {
-                    // 最后一个成员且无新增键：前向跳过空白找到前导逗号，删除到值结束位置（保留对象闭合前导换行）。
-                    var delStart = member.memberStart
-                    var i = member.memberStart - 1
-                    while i >= 0 && isWhitespace(node.chars[i]) { i -= 1 }
-                    if i >= 0 && node.chars[i] == "," { delStart = i }
-                    edits.append(Edit(start: delStart, end: member.node.end, replacement: ""))
+            // 按「连续被删成员段」整体删除：每段一个 edit，段内成员之间不产生多个 edit。
+            // 逐个删除时「中间成员删除 [a.memberStart, b.memberStart]」与「最后成员删除 [a.node.end, b.node.end]」
+            // 会在 [a.node.end, b.memberStart) 区间重叠（a.node.end < b.memberStart，中间是逗号+换行），
+            // 导致 applyEdits 返回 nil、merge 退化到丢注释的 writeObject。合并段后每段边界衔接、不重叠。
+            var idx = 0
+            while idx < node.members.count {
+                guard target[node.members[idx].key] == nil else { idx += 1; continue }
+                var segEnd = idx
+                while segEnd < node.members.count && target[node.members[segEnd].key] == nil {
+                    segEnd += 1
                 }
+                let segStart = node.members[idx]
+                let segLast = node.members[segEnd - 1]
+                var delStart = segStart.memberStart
+                var delEnd: Int
+                if segEnd < node.members.count {
+                    // 段后还有保留成员：删除整段 + 段尾尾逗号（保留段前保留成员的尾逗号作分隔）。
+                    delEnd = node.members[segEnd].memberStart
+                } else {
+                    // 段尾是最后一个成员：删除到段尾值结束，并吞掉紧跟的尾逗号（若有），避免逗号残留。
+                    delEnd = segLast.node.end
+                    if delEnd < node.chars.count, node.chars[delEnd] == "," {
+                        delEnd += 1
+                    }
+                    if idx > 0 && !hasInserts {
+                        // 无新增键：前向跳过空白吞掉前导逗号，避免逗号残留。
+                        // 有新增键则保留前导逗号，交由 appendInsertEdits 的插入锚点一并替换。
+                        var k = segStart.memberStart - 1
+                        while k >= 0 && isWhitespace(node.chars[k]) { k -= 1 }
+                        if k >= 0 && node.chars[k] == "," { delStart = k }
+                    }
+                }
+                edits.append(Edit(start: delStart, end: delEnd, replacement: ""))
+                idx = segEnd
             }
         }
 
