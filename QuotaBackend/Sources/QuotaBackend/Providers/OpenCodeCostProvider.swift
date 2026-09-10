@@ -20,8 +20,11 @@ public struct OpenCodeCostProvider: ProviderFetcher {
     let environment: [String: String]
 
     /// 独立明细账本（message 级，按 message.id 去重增量），issue #67 的持久真相源。
-    /// 展示层直接用账本聚合，旧的 OpenCodeUsageArchiveStore 日归档已退役（避免「过去日冻结」阻止补采更新）。
+    /// 展示层用账本聚合 + 旧 usage-archive 一次性迁移的历史日（删会话独有），
+    /// 旧归档在迁移完成后退役（避免「过去日冻结」阻止补采更新）。
     static let ledger = OpenCodeLedgerStore()
+    /// 旧 usage-archive（升级前日归档），仅用于一次性迁移，迁移后退役。
+    static let archive = OpenCodeUsageArchiveStore()
     static let defaultScanDays = 30
 
     public init(
@@ -68,14 +71,28 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         }
         relieveMallocPressure()
 
-        // 2) 账本聚合直接作为展示源（账本即真相源，含补采回填的历史；不再走 archive 冻结避免旧值覆盖新账）。
+        // 2) 账本聚合作为展示源（账本即真相源，含补采回填的历史）。
         let ledgerEntries = await Self.ledger.allEntries(homeDirectory: homeDirectory)
         let sessionIds = Set(ledgerEntries.map { $0.sessionId })
         let dbDays = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
-        // 3) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，
+
+        // 3) 一次性把旧 usage-archive 的历史日迁入账本（幂等），迁移后旧归档退役：
+        //    删会话独有的历史日保留在 legacyDays，账本聚合覆盖重叠日（不双计）。
+        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory) {
+            let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
+            await Self.ledger.migrateLegacyArchiveIfNeeded(
+                homeDirectory: homeDirectory,
+                legacyDays: archiveDays,
+                todayKey: todayKey
+            )
+        }
+        let legacyDays = await Self.ledger.legacyDays(homeDirectory: homeDirectory)
+        let mergedDays = legacyDays.merging(dbDays) { _, ledger in ledger }
+
+        // 4) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，
         //    同节点同模型与 db 直连自动并入同一行；db 侧已排除裸全局 provider，两源互斥不双计）。
         //    即使本地 db 为空，只要有代理用量也照常呈现。
-        let days = mergeProxyDays(into: dbDays)
+        let days = mergeProxyDays(into: mergedDays)
         guard !days.isEmpty else {
             throw ProviderError("no_usage_data", "No OpenCode usage recorded (opencode.db not found or empty; requires OpenCode >= 1.2)")
         }
