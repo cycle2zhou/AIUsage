@@ -51,23 +51,29 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         )
 
         // 1) 读库明细 → 账本合并（upsert 增量；OpenCode 未安装/快照失败时不推进账本游标，下次重试）。
+        //    扫描错误暂存到 scanError，不在有可用旧归档时提前退出（迁移 pending 时旧归档仍要回退展示）。
+        var scanError: Error?
         let dataDirectory = resolveDataDirectory()
         if let dataDirectory {
-            let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
-            defer { cleanupDatabaseSnapshot(snapshotPath) }
-            let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
-            let decoder = JSONDecoder()
-            var entries: [OpenCodeLedgerEntry] = []
-            entries.reserveCapacity(messageRows.count)
-            for messageRow in messageRows {
-                guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
-                entries.append(entry)
+            do {
+                let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
+                defer { cleanupDatabaseSnapshot(snapshotPath) }
+                let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
+                let decoder = JSONDecoder()
+                var entries: [OpenCodeLedgerEntry] = []
+                entries.reserveCapacity(messageRows.count)
+                for messageRow in messageRows {
+                    guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
+                    entries.append(entry)
+                }
+                await Self.ledger.merge(
+                    homeDirectory: homeDirectory,
+                    newEntries: entries,
+                    scanSucceeded: true
+                )
+            } catch {
+                scanError = error
             }
-            await Self.ledger.merge(
-                homeDirectory: homeDirectory,
-                newEntries: entries,
-                scanSucceeded: true
-            )
         }
         relieveMallocPressure()
 
@@ -110,6 +116,11 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         //    即使本地 db 为空，只要有代理用量也照常呈现。
         let days = mergeProxyDays(into: mergedDays)
         guard !days.isEmpty else {
+            // 旧归档也为空时优先抛原始扫描错误（不伪装成成功或 no_usage_data）；
+            // 有旧归档回退时上面已正常返回，不会走到这里。
+            if let scanError {
+                throw scanError
+            }
             throw ProviderError("no_usage_data", "No OpenCode usage recorded (opencode.db not found or empty; requires OpenCode >= 1.2)")
         }
 

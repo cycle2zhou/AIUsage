@@ -105,6 +105,56 @@ final class OpenCodeLegacyMigrationIntegrationTests: XCTestCase {
         XCTAssertEqual(residualAfterRecovery["2026-01-10"]?.totalTokens, 4)
     }
 
+    // MARK: - 用量：数据库存在但查询失败时旧归档回退、扫描错误暂存
+
+    func testScanFailureKeepsLegacyUsageVisibleWhenDatabaseExistsButQueryFails() async throws {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let utc = TimeZone(identifier: "UTC")!
+        let legacyDayMillis = utcMillis(year: 2026, month: 1, day: 10)
+
+        // 升级前旧归档：2026-01-10 = 12 tokens。
+        try writeLegacyUsageArchive(home: home, dayKey: "2026-01-10", inputTokens: 12, cost: 0.01)
+
+        // opencode.db 存在但缺少 message 表 → fetchMessageRows 抛 db_query_failed（扫描失败但不提前退出）。
+        let xdg = home.appendingPathComponent("xdg", isDirectory: true)
+        let dbDir = xdg.appendingPathComponent("opencode", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        let dbPath = dbDir.appendingPathComponent("opencode.db").path
+        try executeSQL("CREATE TABLE unrelated (id TEXT);", databasePath: dbPath)
+
+        let provider = OpenCodeCostProvider(
+            homeDirectory: home.path,
+            timeZone: utc,
+            environment: ["XDG_DATA_HOME": xdg.path]
+        )
+
+        // 第一次 fetch：扫描失败但旧归档有数据 → 展示 12，迁移 pending、full-history 未推进。
+        let first = try await provider.fetchUsage()
+        XCTAssertEqual(first.extra["overall.totalTokens"]?.value as? Int, 12)
+        let stillNeedsMigration = await OpenCodeCostProvider.ledger.needsLegacyArchiveMigration(homeDirectory: home.path)
+        XCTAssertTrue(stillNeedsMigration)
+        let importedAfterFirst = await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path)
+        XCTAssertFalse(importedAfterFirst)
+
+        // 修复数据库：建 message 表 + 昨日 8 tokens → 残差 12-8=4，展示 12 不重复不丢。
+        try executeSQL(
+            """
+            DROP TABLE unrelated;
+            CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+            INSERT INTO message VALUES ('msg_1', 'sess_1', \(legacyDayMillis), '\(messageData(tokens: 8, cost: 0.01))');
+            """,
+            databasePath: dbPath
+        )
+
+        let second = try await provider.fetchUsage()
+        XCTAssertEqual(second.extra["overall.totalTokens"]?.value as? Int, 12)
+        let importedAfterRecovery = await OpenCodeCostProvider.ledger.isFullHistoryImported(homeDirectory: home.path)
+        XCTAssertTrue(importedAfterRecovery)
+        let residualAfterRecovery = await OpenCodeCostProvider.ledger.legacyResidualDays(homeDirectory: home.path)
+        XCTAssertEqual(residualAfterRecovery["2026-01-10"]?.totalTokens, 4)
+    }
+
     // MARK: - 调用：同日部分删除不丢、迁移后新增累加
 
     func testLegacyCallArchivePartialSameDayDeletionIsPreserved() async throws {
