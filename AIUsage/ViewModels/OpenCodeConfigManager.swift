@@ -653,7 +653,7 @@ final class OpenCodeConfigManager {
             // 每模型追加参数（issue #69）：在节点级默认 limit/options 写入之后按点路径合并，
             // 覆盖节点级默认值，实现 per-model 独立配置。
             if !model.extraParameters.isEmpty {
-                entry = Self.applyExtraParameters(model.extraParameters, to: entry)
+                entry = ExtraParametersApplier.applyExtraParameters(model.extraParameters, to: entry)
             }
             modelsBlock[model.id] = entry
         }
@@ -714,59 +714,6 @@ final class OpenCodeConfigManager {
         )
         root["model"] = "\(node.managedProviderId)/\(defaultModel)"
         return root
-    }
-
-    /// 把每模型追加参数按点路径合并进模型 entry，覆盖节点级默认（issue #69）。
-    /// 值存字符串，此处智能解析为 JSON 标量/对象/数组后写入。
-    nonisolated static func applyExtraParameters(
-        _ parameters: [String: String],
-        to entry: [String: Any]
-    ) -> [String: Any] {
-        var result = entry
-        for (key, rawValue) in parameters {
-            guard let value = parseParameterValue(rawValue) else { continue }
-            setNestedValue(value, atPath: key, in: &result)
-        }
-        return result
-    }
-
-    /// 把字符串值解析为 JSON 值：整数/浮点/布尔/null 字面量、`{...}`/`[...]` 走 JSON 解析，
-    /// 其余原样保留为字符串。
-    nonisolated static func parseParameterValue(_ rawValue: String) -> Any? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return nil }
-        if let intValue = Int(trimmed) { return intValue }
-        if let doubleValue = Double(trimmed), trimmed.contains(".") { return doubleValue }
-        switch trimmed.lowercased() {
-        case "true": return true
-        case "false": return false
-        case "null", "nil": return NSNull()
-        default: break
-        }
-        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
-            if let data = trimmed.data(using: .utf8),
-               let object = try? JSONSerialization.jsonObject(with: data) {
-                return object
-            }
-        }
-        return rawValue
-    }
-
-    /// 按点路径（如 "limit.context"）把值写入嵌套字典；多段 key 逐层创建中间字典。
-    nonisolated static func setNestedValue(
-        _ value: Any,
-        atPath path: String,
-        in dict: inout [String: Any]
-    ) {
-        let components = path.split(separator: ".").map(String.init).filter { !$0.isEmpty }
-        guard let first = components.first else { return }
-        if components.count == 1 {
-            dict[first] = value
-            return
-        }
-        var child = dict[first] as? [String: Any] ?? [:]
-        setNestedValue(value, atPath: components.dropFirst().joined(separator: "."), in: &child)
-        dict[first] = child
     }
 
     /// 当前全局层的合并结果。接管目标使用备份中的原始内容，其他低优先级层按
