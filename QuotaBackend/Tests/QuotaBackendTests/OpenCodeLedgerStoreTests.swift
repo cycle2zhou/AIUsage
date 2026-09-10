@@ -245,7 +245,7 @@ final class OpenCodeLedgerStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(residual["2026-01-01"]?.totalTokens, 40)
-        XCTAssertEqual(residual["2026-01-01"]?.inputTokens, 40)
+        XCTAssertEqual(residual["2026-01-01"]?.models["anthropic/claude-sonnet"]?.inputTokens, 40)
         XCTAssertEqual(residual["2026-01-01"]?.estimatedCostUsd ?? 0, 0.04, accuracy: 0.0001)
         XCTAssertEqual(residual["2026-01-01"]?.models["anthropic/claude-sonnet"]?.totalTokens, 40)
     }
