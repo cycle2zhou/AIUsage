@@ -19,6 +19,11 @@ final class OpenCodeAuthStore {
         storage = resolveOpenCodeStorage()
     }
 
+    /// 当前 opencode 版本（v1/v2），决定受管 provider 块的字段与顶层键。
+    var schema: OpenCodeSchema {
+        storage.schema
+    }
+
     /// 参与配置文件事务的凭据文件路径（v1 auth.json；v2 SQLite 表无需纳入）。
     var transactionPaths: [String] {
         storage.credentialFilePaths
