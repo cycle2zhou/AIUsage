@@ -1,5 +1,4 @@
 import Foundation
-import SQLite3
 import os.log
 
 // MARK: - OpenCode Node Stats Fetcher
@@ -35,6 +34,7 @@ public enum OpenCodeNodeStatsFetcher {
         public let modelID: String
         public let inputTokens: Int
         public let outputTokens: Int
+        public let reasoningTokens: Int
         public let cacheReadTokens: Int
         public let cacheCreateTokens: Int
         public let costUsd: Double
@@ -42,7 +42,7 @@ public enum OpenCodeNodeStatsFetcher {
         public let durationMs: Int?
 
         public var totalTokens: Int {
-            inputTokens + outputTokens + cacheReadTokens + cacheCreateTokens
+            inputTokens + outputTokens + reasoningTokens + cacheReadTokens + cacheCreateTokens
         }
     }
 
@@ -90,14 +90,15 @@ public enum OpenCodeNodeStatsFetcher {
         let snapshotPath = try provider.makeDatabaseSnapshot(dataDirectory: dataDirectory)
         defer { provider.cleanupDatabaseSnapshot(snapshotPath) }
 
-        let rows = try fetchManagedRows(databasePath: snapshotPath, likePattern: "%\(providerIDPrefix)%")
+        let storage = resolveOpenCodeStorage(homeDirectory: homeDirectory, environment: environment)
+        let messages = try storage.fetchMessages(
+            dbPath: snapshotPath,
+            query: OpenCodeMessageQuery(dataLike: "%\(providerIDPrefix)%")
+        )
 
         var snapshot = Snapshot()
-        let decoder = JSONDecoder()
-        for row in rows {
-            guard let message = try? decoder.decode(OpenCodeCostProvider.MessageData.self, from: row.data),
-                  message.role == "assistant",
-                  let providerID = message.providerID,
+        for message in messages {
+            guard let providerID = message.providerID,
                   providerID.hasPrefix(providerIDPrefix) else {
                 continue
             }
@@ -106,15 +107,16 @@ public enum OpenCodeNodeStatsFetcher {
             // 这里跳过避免产生孤儿桶（per-node 受管键恒为 `aiusage-<slug>`，不受影响）。
             if providerID == OpenCodeCostProvider.globalProxyProviderID { continue }
 
-            let input = message.tokens?.input ?? 0
-            let output = message.tokens?.output ?? 0
-            let cacheRead = message.tokens?.cache?.read ?? 0
-            let cacheCreate = message.tokens?.cache?.write ?? 0
-            let cost = message.cost ?? 0
-            let total = input + output + cacheRead + cacheCreate
+            let input = message.inputTokens
+            let output = message.outputTokens
+            let reasoning = message.reasoningTokens
+            let cacheRead = message.cacheReadTokens
+            let cacheCreate = message.cacheCreateTokens
+            let cost = message.costUsd
+            let total = message.totalTokens
             guard total > 0 || cost > 0 else { continue }
 
-            let date = Date(timeIntervalSince1970: Double(row.timeCreatedMillis) / 1000)
+            let date = Date(timeIntervalSince1970: Double(message.timeCreatedMillis) / 1000)
 
             var stats = snapshot.statsByProviderID[providerID] ?? NodeStats()
             stats.requestCount += 1
@@ -130,21 +132,18 @@ public enum OpenCodeNodeStatsFetcher {
             snapshot.statsByProviderID[providerID] = stats
 
             if snapshot.recentMessages.count < recentLimit {
-                var durationMs: Int?
-                if let created = message.time?.created, let completed = message.time?.completed, completed >= created {
-                    durationMs = Int(completed - created)
-                }
                 snapshot.recentMessages.append(RecentMessage(
-                    id: row.messageId,
+                    id: message.id,
                     date: date,
                     providerID: providerID,
                     modelID: message.modelID ?? "unknown",
                     inputTokens: input,
                     outputTokens: output,
+                    reasoningTokens: reasoning,
                     cacheReadTokens: cacheRead,
                     cacheCreateTokens: cacheCreate,
                     costUsd: cost,
-                    durationMs: durationMs
+                    durationMs: message.durationMs
                 ))
             }
         }
@@ -153,55 +152,4 @@ public enum OpenCodeNodeStatsFetcher {
         return snapshot
     }
 
-    // MARK: - SQL
-
-    private struct ManagedRow {
-        let messageId: String
-        let timeCreatedMillis: Int64
-        let data: Data
-    }
-
-    /// LIKE 预过滤受管行，按时间新→旧返回。模式只是粗筛（避免全表 JSON 解析），
-    /// providerID 前缀精确匹配在解析后进行。
-    private static func fetchManagedRows(databasePath: String, likePattern: String) throws -> [ManagedRow] {
-        var db: OpaquePointer?
-        guard sqlite3_open_v2(databasePath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
-            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unable to open database"
-            sqlite3_close(db)
-            throw ProviderError("db_open_failed", SensitiveDataRedactor.redactPaths(in: message))
-        }
-        defer { sqlite3_close(db) }
-
-        let sql = "SELECT id, time_created, data FROM message WHERE data LIKE ? ORDER BY time_created DESC"
-        var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
-            let message = String(cString: sqlite3_errmsg(db))
-            throw ProviderError("db_query_failed", SensitiveDataRedactor.redactPaths(in: message))
-        }
-        defer { sqlite3_finalize(statement) }
-
-        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-        sqlite3_bind_text(statement, 1, likePattern, -1, transient)
-
-        var rows: [ManagedRow] = []
-        while true {
-            let stepResult = sqlite3_step(statement)
-            if stepResult == SQLITE_DONE { break }
-            guard stepResult == SQLITE_ROW else {
-                let message = String(cString: sqlite3_errmsg(db))
-                throw ProviderError("db_step_failed", SensitiveDataRedactor.redactPaths(in: message))
-            }
-
-            guard let idCString = sqlite3_column_text(statement, 0),
-                  let dataCString = sqlite3_column_text(statement, 2) else {
-                continue
-            }
-            rows.append(ManagedRow(
-                messageId: String(cString: idCString),
-                timeCreatedMillis: sqlite3_column_int64(statement, 1),
-                data: Data(String(cString: dataCString).utf8)
-            ))
-        }
-        return rows
-    }
 }
