@@ -40,11 +40,16 @@ private func opencodeVersion() -> String? {
     }
 }
 
-/// 主版本号 >= 2 → v2；否则 v1。容忍 "v2.0.0" 前缀。
+/// 主版本号 >= 2 → v2；否则 v1。兼容 "opencode v2.0.11" / "2.0.11" / "v2.0.11" 等输出。
 private func isV2(_ version: String) -> Bool {
-    let cleaned = version
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .replacingOccurrences(of: "v", with: "", options: .caseInsensitive)
-    guard let majorString = cleaned.split(separator: ".").first else { return false }
-    return (Int(majorString) ?? 0) >= 2
+    // 提取第一个连续数字序列作为主版本号（跳过命令名前缀与 v 前缀）。
+    var digits = ""
+    for char in version {
+        if char.isNumber {
+            digits.append(char)
+        } else if !digits.isEmpty {
+            break
+        }
+    }
+    return (Int(digits) ?? 0) >= 2
 }
