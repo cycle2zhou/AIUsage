@@ -51,23 +51,29 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         )
 
         // 1) 读库明细 → 账本合并（upsert 增量；OpenCode 未安装/快照失败时不推进账本游标，下次重试）。
+        //    扫描错误暂存到 scanError，不在有可用旧归档时提前退出（迁移 pending 时旧归档仍要回退展示）。
+        var scanError: Error?
         let dataDirectory = resolveDataDirectory()
         if let dataDirectory {
-            let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
-            defer { cleanupDatabaseSnapshot(snapshotPath) }
-            let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
-            let decoder = JSONDecoder()
-            var entries: [OpenCodeLedgerEntry] = []
-            entries.reserveCapacity(messageRows.count)
-            for messageRow in messageRows {
-                guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
-                entries.append(entry)
+            do {
+                let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
+                defer { cleanupDatabaseSnapshot(snapshotPath) }
+                let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
+                let decoder = JSONDecoder()
+                var entries: [OpenCodeLedgerEntry] = []
+                entries.reserveCapacity(messageRows.count)
+                for messageRow in messageRows {
+                    guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
+                    entries.append(entry)
+                }
+                await Self.ledger.merge(
+                    homeDirectory: homeDirectory,
+                    newEntries: entries,
+                    scanSucceeded: true
+                )
+            } catch {
+                scanError = error
             }
-            await Self.ledger.merge(
-                homeDirectory: homeDirectory,
-                newEntries: entries,
-                scanSucceeded: true
-            )
         }
         relieveMallocPressure()
 
@@ -76,24 +82,45 @@ public struct OpenCodeCostProvider: ProviderFetcher {
         let sessionIds = Set(ledgerEntries.map { $0.sessionId })
         let dbDays = OpenCodeLedgerStore.aggregateDays(ledgerEntries)
 
-        // 3) 一次性把旧 usage-archive 的历史日迁入账本（幂等），迁移后旧归档退役：
-        //    删会话独有的历史日保留在 legacyDays，账本聚合覆盖重叠日（不双计）。
-        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory) {
+        // 3) 一次性把旧 usage-archive 迁入账本为「残差」（幂等），迁移后旧归档退役。
+        //    迁移前置：账本已完成全量历史导入（否则残差不完整）；残差 = max(旧归档 - 迁移时账本快照, 0)。
+        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory),
+           await Self.ledger.isFullHistoryImported(homeDirectory: homeDirectory) {
             let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
             await Self.ledger.migrateLegacyArchiveIfNeeded(
                 homeDirectory: homeDirectory,
                 legacyDays: archiveDays,
+                ledgerSnapshotDays: dbDays,
                 todayKey: todayKey
             )
         }
-        let legacyDays = await Self.ledger.legacyDays(homeDirectory: homeDirectory)
-        let mergedDays = legacyDays.merging(dbDays) { _, ledger in ledger }
+        // 展示：迁移完成后恒为「账本 + 持久化残差」（完全重叠不重复、完全删除不丢、同日部分删除也不丢）；
+        //      迁移 pending（账本尚未完成全量回填，或数据目录暂不可用）时过去日回退原旧归档
+        //      （账本覆盖重叠日、删会话独有日保留），保证旧归档历史仍可见且迁移状态保持 pending。
+        let mergedDays: [String: CodexAggregateBucket]
+        if await Self.ledger.needsLegacyArchiveMigration(homeDirectory: homeDirectory) {
+            let archiveDays = await Self.archive.days(homeDirectory: homeDirectory)
+            let archivePastDays = archiveDays.filter { $0.key != todayKey }
+            mergedDays = archivePastDays.merging(dbDays) { _, ledger in ledger }
+        } else {
+            let legacyResidualDays = await Self.ledger.legacyResidualDays(homeDirectory: homeDirectory)
+            mergedDays = dbDays.merging(legacyResidualDays) { ledger, residual in
+                var merged = ledger
+                merged.merge(residual)
+                return merged
+            }
+        }
 
         // 4) 合并全局统一代理用量（来自代理日志永久归档，模型键同口径 `aiusage-<slug>/<model>`，
         //    同节点同模型与 db 直连自动并入同一行；db 侧已排除裸全局 provider，两源互斥不双计）。
         //    即使本地 db 为空，只要有代理用量也照常呈现。
         let days = mergeProxyDays(into: mergedDays)
         guard !days.isEmpty else {
+            // 旧归档也为空时优先抛原始扫描错误（不伪装成成功或 no_usage_data）；
+            // 有旧归档回退时上面已正常返回，不会走到这里。
+            if let scanError {
+                throw scanError
+            }
             throw ProviderError("no_usage_data", "No OpenCode usage recorded (opencode.db not found or empty; requires OpenCode >= 1.2)")
         }
 

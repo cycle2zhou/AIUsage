@@ -58,14 +58,15 @@ struct OpenCodeLedger: Codable, Sendable {
     var fullHistoryImportedAt: String?
     /// 最后一次成功扫描时间（epoch 毫秒），作为增量补采游标。nil = 尚未成功扫描过。
     var lastSuccessfulScanMillis: Int64?
-    /// 旧 usage-archive 一次性迁入的历史日（冻结快照，账本聚合覆盖重叠日，删会话独有日据此保留）。nil = 尚未迁移。
-    var legacyDays: [String: CodexAggregateBucket]?
+    /// 旧 usage-archive 迁移后的「残差」（max(旧归档 - 迁移时账本快照, 0)，按 day+model 冻结）。
+    /// 迁移后展示恒为「当前账本 + 残差」，完全重叠不重复、完全删除不丢、同日部分删除也不丢。nil = 尚未迁移。
+    var legacyResidualDays: [String: CodexAggregateBucket]?
     /// 旧 usage-archive 迁移完成时间（ISO8601）。nil = 尚未迁移。
     var legacyArchiveMigratedAt: String?
 }
 
 actor OpenCodeLedgerStore {
-    static let artifactVersion = 1
+    static let artifactVersion = 2
 
     private var ledgers: [String: OpenCodeLedger] = [:]
     private var loaded: Set<String> = []
@@ -132,32 +133,88 @@ actor OpenCodeLedgerStore {
         load(homeDirectory).legacyArchiveMigratedAt == nil
     }
 
-    /// 一次性把旧 usage-archive 的「过去日」迁入账本（幂等，迁移完成状态持久化）：
-    /// 迁入后设置 legacyArchiveMigratedAt 标记，旧归档不再参与展示，改由账本负责迁移后的增量。
-    /// 今天由账本实时维护，不迁入（旧归档的今天快照会过期）。
+    /// 账本是否已完成全量历史导入（全量导入成功是旧归档迁移的前置条件——只有账本回填了全部
+    /// 明细后，用「迁移时账本快照」算出的残差才完整，否则会把未回填的删会话记录错当成残差）。
+    func isFullHistoryImported(homeDirectory: String) -> Bool {
+        load(homeDirectory).fullHistoryImportedAt != nil
+    }
+
+    /// 一次性把旧 usage-archive 迁入账本为「残差」（幂等，迁移完成状态持久化）：
+    /// `residual = max(legacy - ledgerSnapshot, 0)`，按 day+model 逐字段相减钳制。
+    /// 迁移后展示恒为「当前账本 + 残差」：完全重叠不重复、完全删除不丢、同日部分删除也不丢；
+    /// 迁移后新记录继续由账本正常增量。今天由账本实时维护，不参与残差（旧归档今天快照会过期）。
     func migrateLegacyArchiveIfNeeded(
         homeDirectory: String,
         legacyDays: [String: CodexAggregateBucket],
+        ledgerSnapshotDays: [String: CodexAggregateBucket],
         todayKey: String
     ) {
         var ledger = load(homeDirectory)
         guard ledger.legacyArchiveMigratedAt == nil else { return }
 
-        var migrated: [String: CodexAggregateBucket] = [:]
-        for (day, bucket) in legacyDays where day != todayKey {
-            migrated[day] = bucket
-        }
+        let residual = Self.residualDays(
+            legacyDays: legacyDays,
+            ledgerSnapshotDays: ledgerSnapshotDays,
+            todayKey: todayKey
+        )
 
-        ledger.legacyDays = migrated
+        ledger.legacyResidualDays = residual
         ledger.legacyArchiveMigratedAt = SharedFormatters.iso8601String(from: Date())
         ledger.updatedAt = SharedFormatters.iso8601String(from: Date())
         ledgers[homeDirectory] = ledger
         save(homeDirectory, ledger)
     }
 
-    /// 已迁入的历史日（冻结快照）。展示时账本聚合覆盖重叠日，删会话独有日据此保留。
-    func legacyDays(homeDirectory: String) -> [String: CodexAggregateBucket] {
-        load(homeDirectory).legacyDays ?? [:]
+    /// 已迁入的残差（冻结快照）。展示时叠加到账本聚合之上，删会话独有部分据此保留、重叠部分不双计。
+    func legacyResidualDays(homeDirectory: String) -> [String: CodexAggregateBucket] {
+        load(homeDirectory).legacyResidualDays ?? [:]
+    }
+
+    /// 计算旧归档相对「迁移时账本快照」的残差：`max(legacy - ledgerSnapshot, 0)`。
+    /// 按 day+model 逐字段相减钳制（input/output/cacheRead/cacheCreate/totalTokens/cost 各自独立），
+    /// 日汇总（totalTokens/cost）从模型残差重新聚合，usageRows 桶级相减钳制。今天不参与。
+    static func residualDays(
+        legacyDays: [String: CodexAggregateBucket],
+        ledgerSnapshotDays: [String: CodexAggregateBucket],
+        todayKey: String
+    ) -> [String: CodexAggregateBucket] {
+        var residual: [String: CodexAggregateBucket] = [:]
+        for (day, legacyBucket) in legacyDays where day != todayKey {
+            let ledgerBucket = ledgerSnapshotDays[day] ?? .empty
+            var residualBucket = CodexAggregateBucket.empty
+
+            for (modelName, legacyModel) in legacyBucket.models {
+                let ledgerModel = ledgerBucket.models[modelName] ?? CodexModelAggregate(model: modelName)
+                let input = max(legacyModel.inputTokens - ledgerModel.inputTokens, 0)
+                let output = max(legacyModel.outputTokens - ledgerModel.outputTokens, 0)
+                let cacheRead = max(legacyModel.cacheReadTokens - ledgerModel.cacheReadTokens, 0)
+                let cacheCreate = max(legacyModel.cacheCreateTokens - ledgerModel.cacheCreateTokens, 0)
+                let total = max(legacyModel.totalTokens - ledgerModel.totalTokens, 0)
+                let cost = max(legacyModel.estimatedCostUsd - ledgerModel.estimatedCostUsd, 0)
+                if total == 0, cost == 0, input == 0, output == 0, cacheRead == 0, cacheCreate == 0 {
+                    continue
+                }
+                residualBucket.models[modelName] = CodexModelAggregate(
+                    model: modelName,
+                    totalTokens: total,
+                    inputTokens: input,
+                    outputTokens: output,
+                    cacheReadTokens: cacheRead,
+                    cacheCreateTokens: cacheCreate,
+                    unpricedRequests: 0,
+                    estimatedCostUsd: cost
+                )
+                residualBucket.totalTokens += total
+                residualBucket.estimatedCostUsd += cost
+            }
+
+            residualBucket.usageRows = max(legacyBucket.usageRows - ledgerBucket.usageRows, 0)
+
+            if !residualBucket.models.isEmpty || residualBucket.usageRows > 0 {
+                residual[day] = residualBucket
+            }
+        }
+        return residual
     }
 
     /// 从明细聚合日桶（复用 CodexAggregateBucket.record）。
