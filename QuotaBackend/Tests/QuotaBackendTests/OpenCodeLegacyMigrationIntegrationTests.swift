@@ -116,7 +116,7 @@ final class OpenCodeLegacyMigrationIntegrationTests: XCTestCase {
         // 升级前旧归档：2026-01-10 = 12 tokens。
         try writeLegacyUsageArchive(home: home, dayKey: "2026-01-10", inputTokens: 12, cost: 0.01)
 
-        // opencode.db 存在但缺少 message 表 → fetchMessageRows 抛 db_query_failed（扫描失败但不提前退出）。
+        // opencode.db 存在但缺少消息表（v1 message / v2 session_message）→ storage.fetchMessages 抛 db_query_failed（扫描失败但不提前退出）。
         let xdg = home.appendingPathComponent("xdg", isDirectory: true)
         let dbDir = xdg.appendingPathComponent("opencode", isDirectory: true)
         try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)

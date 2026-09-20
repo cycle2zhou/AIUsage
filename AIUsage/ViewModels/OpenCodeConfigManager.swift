@@ -552,7 +552,7 @@ final class OpenCodeConfigManager {
     /// Keep config and auth changes all-or-nothing. A failed activation must not
     /// leave a provider block without its credential, or vice versa.
     private func withManagedFilesTransaction(_ operation: () throws -> Void) throws {
-        try withFileTransaction(paths: [configPath, authStore.path], operation)
+        try withFileTransaction(paths: [configPath] + authStore.transactionPaths, operation)
     }
 
     private func withFileTransaction(paths: [String], _ operation: () throws -> Void) throws {
@@ -883,7 +883,7 @@ final class OpenCodeConfigManager {
         }
         do {
             let data = try Data(contentsOf: URL(fileURLWithPath: backupPath))
-            try withFileTransaction(paths: [active.targetPath, authStore.path, sessionManifestPath, backupPath]) {
+            try withFileTransaction(paths: [active.targetPath] + authStore.transactionPaths + [sessionManifestPath, backupPath]) {
                 let directory = (active.targetPath as NSString).deletingLastPathComponent
                 try fileManager.createDirectory(atPath: directory, withIntermediateDirectories: true)
                 try data.write(to: URL(fileURLWithPath: active.targetPath), options: .atomic)
@@ -911,7 +911,7 @@ final class OpenCodeConfigManager {
 
     private func finishManagedOnlyRestore(_ active: OpenCodeTakeoverSession) throws {
         do {
-            try withFileTransaction(paths: [active.targetPath, authStore.path, sessionManifestPath]) {
+            try withFileTransaction(paths: [active.targetPath] + authStore.transactionPaths + [sessionManifestPath]) {
                 if let root = try readConfigObjectIfExists() {
                     let stripped = stripManagedEntries(from: root)
                     let meaningfulKeys = stripped.keys.filter { $0 != "$schema" }

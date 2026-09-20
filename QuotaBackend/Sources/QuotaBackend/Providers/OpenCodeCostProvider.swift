@@ -58,12 +58,18 @@ public struct OpenCodeCostProvider: ProviderFetcher {
             do {
                 let snapshotPath = try makeDatabaseSnapshot(dataDirectory: dataDirectory)
                 defer { cleanupDatabaseSnapshot(snapshotPath) }
-                let messageRows = try fetchMessageRows(databasePath: snapshotPath, sinceMillis: sinceMillis)
-                let decoder = JSONDecoder()
+                let storage = resolveOpenCodeStorage(
+                    homeDirectory: homeDirectory,
+                    environment: environment
+                )
+                let messages = try storage.fetchMessages(
+                    dbPath: snapshotPath,
+                    query: OpenCodeMessageQuery(sinceMillis: sinceMillis)
+                )
                 var entries: [OpenCodeLedgerEntry] = []
-                entries.reserveCapacity(messageRows.count)
-                for messageRow in messageRows {
-                    guard let entry = parseLedgerEntry(messageRow, decoder: decoder) else { continue }
+                entries.reserveCapacity(messages.count)
+                for message in messages {
+                    guard let entry = parseLedgerEntry(message) else { continue }
                     entries.append(entry)
                 }
                 await Self.ledger.merge(
