@@ -319,7 +319,7 @@ struct OpenCodeV2Storage: OpenCodeStorage {
         )
     }
 
-    private static func normalizeTool(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
+    static func normalizeTool(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
         guard object["type"] as? String == "tool",
               let name = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty else {
@@ -368,7 +368,7 @@ struct OpenCodeV2Storage: OpenCodeStorage {
     /// `namespace.tool`（如 dbx.dbx_execute_query），转下划线后与 native 模式 effectiveName
     /// （`namespace_tool`）一致，供 classify 的 matchKnownServer 按 `server + "_"` 前缀匹配归 .mcp。
     /// 状态用 item 自身 status（execute 整体 completed 不代表内部无 error）。
-    private static func expandExecuteToolCalls(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
+    static func expandExecuteToolCalls(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
         guard let state = object["state"] as? [String: Any],
               let metadata = state["metadata"] as? [String: Any],
               let toolCalls = metadata["toolCalls"] as? [[String: Any]],

@@ -97,7 +97,7 @@ private func resolveCommandPathViaLoginShell(_ command: String) -> String? {
 }
 
 /// 主版本号 >= 2 → v2；否则 v1。兼容 "opencode v2.0.11" / "2.0.11" / "v2.0.11" 等输出。
-private func isV2(_ version: String) -> Bool {
+func isV2(_ version: String) -> Bool {
     // 提取第一个连续数字序列作为主版本号（跳过命令名前缀与 v 前缀）。
     var digits = ""
     for char in version {
