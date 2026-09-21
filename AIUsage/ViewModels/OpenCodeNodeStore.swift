@@ -80,6 +80,7 @@ final class OpenCodeNodeStore: ObservableObject {
         load()
         loadGlobalConfig()
         reconcileWithConfigFile()
+        migrateV1ManagedBlocksIfNeeded()
         restoreProxyIfNeeded()
     }
 
@@ -475,6 +476,20 @@ final class OpenCodeNodeStore: ObservableObject {
             changed = true
         }
         if changed { save() }
+    }
+
+    /// 启动时检测 v1→v2 自动迁移：opencode 已升级到 v2，但配置里残留 v1 受管块（单数 provider 键）。
+    /// 有激活节点时用当前节点重新注入 v2 格式（自动剥离旧 v1 块）；无激活节点则跳过
+    /// （v2 忽略单数键，残留块不影响使用，下次激活时自然覆盖）。
+    private func migrateV1ManagedBlocksIfNeeded() {
+        guard configManager.needsV1ToV2Migration else { return }
+        guard !activeNodeIds.isEmpty else { return }
+        do {
+            try rewriteManagedConfig()
+            openCodeStoreLog.info("Migrated v1 managed provider blocks to v2 schema")
+        } catch {
+            openCodeStoreLog.error("Failed to migrate v1 managed provider blocks: \(SensitiveDataRedactor.redactedMessage(for: error), privacy: .public)")
+        }
     }
 
     /// App 重启后恢复代理：激活中的代理模式节点其子进程已随上次退出而消亡，
