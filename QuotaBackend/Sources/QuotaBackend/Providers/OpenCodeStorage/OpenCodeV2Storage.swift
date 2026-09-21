@@ -329,7 +329,13 @@ struct OpenCodeV2Storage: OpenCodeStorage {
         }
         let state = object["state"] as? [String: Any]
         let status = (state?["status"] as? String)?.lowercased()
-        let inputName = (state?["input"] as? [String: Any])?["name"] as? String
+        // v2 skill 工具：state.input 是 {id}（技能 id），显示名在 state.metadata.name；fallback 到 input.id；
+        // 最后兼容 v1 的 input.name（其它工具形态）。非 skill 工具不用 inputName。
+        let stateInput = state?["input"] as? [String: Any]
+        let stateMetadata = state?["metadata"] as? [String: Any]
+        let inputName = (stateMetadata?["name"] as? String)
+            ?? (stateInput?["id"] as? String)
+            ?? (stateInput?["name"] as? String)
         let time = object["time"] as? [String: Any]
         let createdMillis = (time?["created"] as? NSNumber)?.int64Value ?? fallbackMillis
         var durationMs: Double?

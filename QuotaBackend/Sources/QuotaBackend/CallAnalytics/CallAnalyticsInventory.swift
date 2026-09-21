@@ -114,9 +114,22 @@ struct CallAnalyticsInventory {
     }
 
     private func addServerKeys(from object: [String: Any], into names: inout Set<String>) {
-        for key in ["mcpServers", "mcp"] {
-            if let servers = object[key] as? [String: Any] {
+        // Claude：顶层 mcpServers.{name}（平铺）。
+        if let mcpServers = object["mcpServers"] as? [String: Any] {
+            for name in mcpServers.keys {
+                let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { names.insert(trimmed) }
+            }
+        }
+        // OpenCode：v2 是 mcp.servers.{name}（嵌套一层），v1 是 mcp.{name}（平铺）。
+        if let mcp = object["mcp"] as? [String: Any] {
+            if let servers = mcp["servers"] as? [String: Any] {
                 for name in servers.keys {
+                    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty { names.insert(trimmed) }
+                }
+            } else {
+                for name in mcp.keys {
                     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
                     if !trimmed.isEmpty { names.insert(trimmed) }
                 }
