@@ -21,7 +21,9 @@ struct OpenCodeCallEventSource {
     /// OpenCode 内置工具名（单词、无下划线）。其余含下划线者按 MCP 处理（启发式，见 classify）。
     private static let builtinTools: Set<String> = [
         "read", "write", "edit", "multiedit", "bash", "glob", "grep",
-        "list", "webfetch", "patch", "task", "question", "todowrite", "todoread", "invalid"
+        "list", "webfetch", "patch", "task", "question", "todowrite", "todoread", "invalid",
+        // v2 Code Mode 内置搜索工具（无 namespace，execute 展开后 name="search"）。
+        "search"
     ]
 
     func collect(cutoff: Date?) -> (entries: [OpenCodeCallLedgerEntry], status: CallSourceStatus) {

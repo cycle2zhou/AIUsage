@@ -146,9 +146,7 @@ struct OpenCodeV2Storage: OpenCodeStorage {
                 continue
             }
             for item in content {
-                if let call = Self.normalizeTool(fallbackMillis: fallbackMillis, object: item) {
-                    calls.append(call)
-                }
+                calls.append(contentsOf: Self.normalizeTool(fallbackMillis: fallbackMillis, object: item))
             }
         }
         openCodeV2Log.debug("Fetched \(calls.count, privacy: .public) v2 tool calls")
@@ -321,12 +319,20 @@ struct OpenCodeV2Storage: OpenCodeStorage {
         )
     }
 
-    private static func normalizeTool(fallbackMillis: Int64, object: [String: Any]) -> OpenCodeToolCall? {
+    private static func normalizeTool(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
         guard object["type"] as? String == "tool",
               let name = (object["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !name.isEmpty else {
-            return nil
+            return []
         }
+
+        // v2 Code Mode：MCP 等 codemode:true 工具通过 `execute` 容器调用，真实调用藏在
+        // state.metadata.toolCalls（点分 namespace.tool）。展开成独立调用；为空时兜底保留 execute 本身。
+        if name == "execute" {
+            let expanded = Self.expandExecuteToolCalls(fallbackMillis: fallbackMillis, object: object)
+            if !expanded.isEmpty { return expanded }
+        }
+
         let state = object["state"] as? [String: Any]
         let status = (state?["status"] as? String)?.lowercased()
         // v2 skill 工具：state.input 是 {id}（技能 id），显示名在 state.metadata.name；fallback 到 input.id；
@@ -348,13 +354,47 @@ struct OpenCodeV2Storage: OpenCodeStorage {
                 durationMs = completed - Double(createdMillis)
             }
         }
-        return OpenCodeToolCall(
+        return [OpenCodeToolCall(
             id: (object["id"] as? String) ?? UUID().uuidString,
             name: name,
             timeCreatedMillis: createdMillis,
             status: status,
             durationMs: durationMs,
             inputName: inputName
-        )
+        )]
+    }
+
+    /// 展开 v2 Code Mode `execute` 容器的 state.metadata.toolCalls：每个 item 的 `tool` 是点分
+    /// `namespace.tool`（如 dbx.dbx_execute_query），转下划线后与 native 模式 effectiveName
+    /// （`namespace_tool`）一致，供 classify 的 matchKnownServer 按 `server + "_"` 前缀匹配归 .mcp。
+    /// 状态用 item 自身 status（execute 整体 completed 不代表内部无 error）。
+    private static func expandExecuteToolCalls(fallbackMillis: Int64, object: [String: Any]) -> [OpenCodeToolCall] {
+        guard let state = object["state"] as? [String: Any],
+              let metadata = state["metadata"] as? [String: Any],
+              let toolCalls = metadata["toolCalls"] as? [[String: Any]],
+              !toolCalls.isEmpty else {
+            return []
+        }
+        let time = object["time"] as? [String: Any]
+        let createdMillis = (time?["created"] as? NSNumber)?.int64Value ?? fallbackMillis
+        let executeStatus = (state["status"] as? String)?.lowercased()
+
+        var calls: [OpenCodeToolCall] = []
+        calls.reserveCapacity(toolCalls.count)
+        for item in toolCalls {
+            guard let tool = (item["tool"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !tool.isEmpty else { continue }
+            let normalized = tool.replacingOccurrences(of: ".", with: "_")
+            let status = (item["status"] as? String)?.lowercased() ?? executeStatus
+            calls.append(OpenCodeToolCall(
+                id: (object["id"] as? String) ?? UUID().uuidString,
+                name: normalized,
+                timeCreatedMillis: createdMillis,
+                status: status,
+                durationMs: nil,
+                inputName: nil
+            ))
+        }
+        return calls
     }
 }
