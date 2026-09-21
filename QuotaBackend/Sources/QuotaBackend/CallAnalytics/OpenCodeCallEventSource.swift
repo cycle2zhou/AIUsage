@@ -96,8 +96,11 @@ struct OpenCodeCallEventSource {
             )
         }
 
-        // 回退启发式：OpenCode 把 MCP 工具命名为 `<server>_<tool>`；非内置且含下划线者归为 MCP。
-        if let sep = call.name.firstIndex(of: "_") {
+        // 已知 server 清单可用时，匹配不上 matchKnownServer 的工具不是 MCP，而是插件 namespace 工具
+        // （v2 内置插件如 opencode/acp 也用 `<namespace>_<tool>` 命名，会被旧启发式误归为 MCP）。
+        // 仅在拿不到配置清单时，才回退「非内置且含下划线即 MCP」的启发式兜底。
+        if knownMCPServers.isEmpty,
+           let sep = call.name.firstIndex(of: "_") {
             let server = String(call.name[call.name.startIndex..<sep])
             let toolName = String(call.name[call.name.index(after: sep)...])
             if !server.isEmpty, !toolName.isEmpty {
