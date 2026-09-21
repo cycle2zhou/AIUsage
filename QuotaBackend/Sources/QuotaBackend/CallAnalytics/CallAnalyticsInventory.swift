@@ -113,7 +113,7 @@ struct CallAnalyticsInventory {
         }
     }
 
-    private func addServerKeys(from object: [String: Any], into names: inout Set<String>) {
+    func addServerKeys(from object: [String: Any], into names: inout Set<String>) {
         // Claude：顶层 mcpServers.{name}（平铺）。
         if let mcpServers = object["mcpServers"] as? [String: Any] {
             for name in mcpServers.keys {

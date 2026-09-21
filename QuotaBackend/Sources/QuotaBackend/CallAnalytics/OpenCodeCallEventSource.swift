@@ -69,7 +69,7 @@ struct OpenCodeCallEventSource {
 
     /// 把一条归一化工具调用归为 skill / builtin / mcp / other。成功率/耗时取 OpenCodeToolCall 的
     /// status/durationMs（reader 已按版本归一化）。
-    private func classify(call: OpenCodeToolCall, dayKey: String) -> OpenCodeCallLedgerEntry {
+    func classify(call: OpenCodeToolCall, dayKey: String) -> OpenCodeCallLedgerEntry {
         let lower = call.name.lowercased()
         let success = Self.outcome(from: call.status)
         let durationMs = call.durationMs
@@ -122,7 +122,7 @@ struct OpenCodeCallEventSource {
     }
 
     /// 从归一化 status 判定成功/失败：completed→成功，error→失败，其余→nil（不计入分母）。
-    private static func outcome(from status: String?) -> Bool? {
+    static func outcome(from status: String?) -> Bool? {
         guard let status else { return nil }
         switch status {
         case "completed": return true
@@ -134,7 +134,7 @@ struct OpenCodeCallEventSource {
     /// 在已装 server 名里找能作为 `tool` 前缀的最长者（`<server>_<tool>`）。
     /// 同时尝试把 server 名的 `-` 归一为 `_` 比较，兼容工具命名替换连字符的情况；
     /// 返回的 server 用配置原名，保证与零调用清单对得上。
-    private func matchKnownServer(tool: String) -> (server: String, tool: String)? {
+    func matchKnownServer(tool: String) -> (server: String, tool: String)? {
         guard !knownMCPServers.isEmpty else { return nil }
         for server in knownMCPServers.sorted(by: { $0.count > $1.count }) {
             for candidate in [server, server.replacingOccurrences(of: "-", with: "_")] {
