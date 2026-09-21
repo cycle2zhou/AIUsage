@@ -194,6 +194,18 @@ final class OpenCodeConfigManager {
         return false
     }
 
+    /// 是否需要 v1→v2 自动迁移：opencode 已升级到 v2（顶层复数 `providers`），
+    /// 但配置里残留 v1 时代的受管块（单数 `provider` 键有 aiusage*，复数 `providers` 键没有）。
+    /// 仅用于启动时检测并触发一次重写；迁移后复数为新格式，此值为 false。
+    var needsV1ToV2Migration: Bool {
+        guard openCodeSchema == .v2 else { return false }
+        guard let root = try? readConfigObjectIfExists() else { return false }
+        let legacyProvider = root["provider"] as? [String: Any] ?? [:]
+        guard legacyProvider.keys.contains(where: Self.isManagedProviderKey) else { return false }
+        let modernProviders = root["providers"] as? [String: Any] ?? [:]
+        return !modernProviders.keys.contains(where: Self.isManagedProviderKey)
+    }
+
     /// 是否存在我们的备份（代表接管态/未正常还原）。
     var hasBackup: Bool {
         guard let backupPath else { return false }
