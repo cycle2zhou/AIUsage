@@ -61,4 +61,13 @@ final class OpenCodeAuthStore {
     func removeManagedCredentials() -> Bool {
         syncManagedCredentials([:])
     }
+
+    /// 受管凭据快照（providerID → key，仅 aiusage*），供激活事务失败时回滚。
+    /// v1 凭据在 auth.json（已被文件事务 transactionPaths 保护），v2 凭据在 opencode.db
+    /// 不受文件事务保护，激活失败后需据此手动恢复。
+    func snapshotManagedCredentials() -> [String: String] {
+        Dictionary(uniqueKeysWithValues: storage.loadAllCredentials().filter {
+            OpenCodeConfigManager.isManagedProviderKey($0.key)
+        })
+    }
 }

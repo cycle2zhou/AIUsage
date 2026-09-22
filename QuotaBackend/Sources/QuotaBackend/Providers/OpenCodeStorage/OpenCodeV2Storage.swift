@@ -68,6 +68,8 @@ struct OpenCodeV2Storage: OpenCodeStorage {
             sql += " AND data LIKE ?"
             binds.append(.text(dataLike))
         }
+        // 稳定倒序：recent 取前 N 条需最新在前，否则 stats 页 recent 列表顺序随 sqlite 扫描顺序漂移。
+        sql += " ORDER BY time_created DESC, id DESC"
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -189,6 +191,7 @@ struct OpenCodeV2Storage: OpenCodeStorage {
             return false
         }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 5000)
 
         guard let valueJSON = Self.makeKeyValueJSON(key: key) else { return false }
         let nowMillis = Int64(Date().timeIntervalSince1970 * 1000)
@@ -205,7 +208,9 @@ struct OpenCodeV2Storage: OpenCodeStorage {
             return sqlite3_step(statement) == SQLITE_DONE
         }
 
-        exec(db, "UPDATE credential SET active = 0 WHERE integration_id = ?", .text(providerID))
+        guard exec(db, "UPDATE credential SET active = 0 WHERE integration_id = ?", .text(providerID)) else {
+            return false
+        }
         let newID = "cred_" + UUID().uuidString
         let sql = "INSERT INTO credential (id, integration_id, label, value, active, time_created, time_updated) VALUES (?, ?, 'default', ?, 1, ?, ?)"
         guard let statement = prepare(db, sql) else { return false }
@@ -225,9 +230,9 @@ struct OpenCodeV2Storage: OpenCodeStorage {
             return false
         }
         defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 5000)
 
-        exec(db, "DELETE FROM credential WHERE integration_id = ?", .text(providerID))
-        return true
+        return exec(db, "DELETE FROM credential WHERE integration_id = ?", .text(providerID))
     }
 
     // MARK: - Private helpers
@@ -245,8 +250,8 @@ struct OpenCodeV2Storage: OpenCodeStorage {
         return statement
     }
 
-    private func exec(_ db: OpaquePointer?, _ sql: String, _ bind: BindValue?) {
-        guard let statement = prepare(db, sql) else { return }
+    private func exec(_ db: OpaquePointer?, _ sql: String, _ bind: BindValue?) -> Bool {
+        guard let statement = prepare(db, sql) else { return false }
         defer { sqlite3_finalize(statement) }
         if let bind {
             switch bind {
@@ -254,7 +259,7 @@ struct OpenCodeV2Storage: OpenCodeStorage {
             case .text(let str): sqlite3_bind_text(statement, 1, str, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
             }
         }
-        _ = sqlite3_step(statement)
+        return sqlite3_step(statement) == SQLITE_DONE
     }
 
     private func queryCredentialID(db: OpaquePointer?, providerID: String) -> String? {
@@ -379,15 +384,18 @@ struct OpenCodeV2Storage: OpenCodeStorage {
         let createdMillis = (time?["created"] as? NSNumber)?.int64Value ?? fallbackMillis
         let executeStatus = (state["status"] as? String)?.lowercased()
 
+        // 展开的每个子调用若共用 execute 容器的 id，ledger 按 id upsert 会互相覆盖；
+        // 以父 id + 子序号生成唯一 id（同一容器内序号唯一，跨容器父 id 唯一）。
+        let parentID = (object["id"] as? String) ?? UUID().uuidString
         var calls: [OpenCodeToolCall] = []
         calls.reserveCapacity(toolCalls.count)
-        for item in toolCalls {
+        for (index, item) in toolCalls.enumerated() {
             guard let tool = (item["tool"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !tool.isEmpty else { continue }
             let normalized = tool.replacingOccurrences(of: ".", with: "_")
             let status = (item["status"] as? String)?.lowercased() ?? executeStatus
             calls.append(OpenCodeToolCall(
-                id: (object["id"] as? String) ?? UUID().uuidString,
+                id: "\(parentID)#\(index)",
                 name: normalized,
                 timeCreatedMillis: createdMillis,
                 status: status,

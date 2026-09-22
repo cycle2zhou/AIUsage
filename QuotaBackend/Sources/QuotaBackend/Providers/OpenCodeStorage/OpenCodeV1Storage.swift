@@ -70,6 +70,8 @@ struct OpenCodeV1Storage: OpenCodeStorage {
         if !whereParts.isEmpty {
             sql += " WHERE " + whereParts.joined(separator: " AND ")
         }
+        // 稳定倒序：recent 取前 N 条需最新在前，否则 stats 页 recent 列表顺序随 sqlite 扫描顺序漂移。
+        sql += " ORDER BY time_created DESC, id DESC"
 
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {

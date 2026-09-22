@@ -334,6 +334,8 @@ final class OpenCodeConfigManager {
             }
         }
         let hadSession = session != nil
+        // v2 凭据在 opencode.db，不受 withManagedFilesTransaction 的文件快照保护，失败时需据此手动回滚。
+        let credentialSnapshot = authStore.snapshotManagedCredentials()
         do {
             let pristine = try establishBackupAndLoadPristine()
             try withManagedFilesTransaction {
@@ -369,6 +371,10 @@ final class OpenCodeConfigManager {
                 openCodeConfigLog.info("opencode config managed providers injected (nodes=\(nodes.count, privacy: .public), default=\(defaultNode.managedProviderId, privacy: .public), jsonc=\(self.usesJSONC, privacy: .public), keyInAuthFile=\(keyPlacement == .externalAuthFile, privacy: .public))")
             }
         } catch {
+            // v2 凭据在 opencode.db 不在文件事务内，激活中途失败需回滚到激活前快照。
+            if openCodeSchema == .v2 {
+                _ = authStore.syncManagedCredentials(credentialSnapshot)
+            }
             if !hadSession { discardSessionFiles() }
             throw error
         }
@@ -389,6 +395,8 @@ final class OpenCodeConfigManager {
     func activateGlobal(interface: OpenCodeProtocol, baseURL: String, clientKey: String, virtualModel: String) throws {
         let model = virtualModel.nilIfBlank ?? "model"
         let hadSession = session != nil
+        // v2 凭据在 opencode.db，不受 withManagedFilesTransaction 的文件快照保护，失败时需据此手动回滚。
+        let credentialSnapshot = authStore.snapshotManagedCredentials()
         do {
             let pristine = try establishBackupAndLoadPristine()
             try withManagedFilesTransaction {
@@ -424,6 +432,10 @@ final class OpenCodeConfigManager {
                 openCodeConfigLog.info("opencode config global proxy provider injected (interface=\(interface.rawValue, privacy: .public), model=\(model, privacy: .public), jsonc=\(self.usesJSONC, privacy: .public))")
             }
         } catch {
+            // v2 凭据在 opencode.db 不在文件事务内，激活中途失败需回滚到激活前快照。
+            if openCodeSchema == .v2 {
+                _ = authStore.syncManagedCredentials(credentialSnapshot)
+            }
             if !hadSession { discardSessionFiles() }
             throw error
         }
@@ -665,17 +677,26 @@ final class OpenCodeConfigManager {
             if !generationOptions.isEmpty { entry[isV2 ? "settings" : "options"] = generationOptions }
             // 每模型 modalities（issue #24）：任一侧非空才写，否则由 OpenCode 取模型默认。
             if model.hasModalities {
-                var modBlock: [String: Any] = [:]
-                if !model.inputModalities.isEmpty {
-                    modBlock["input"] = model.inputModalities.map(\.rawValue)
-                }
-                if !model.outputModalities.isEmpty {
-                    modBlock["output"] = model.outputModalities.map(\.rawValue)
-                }
                 if isV2 {
-                    modBlock["tools"] = true
-                    entry["capabilities"] = modBlock
+                    // v2 Capabilities 三项（tools/input/output）必填，缺项会被原生配置解码过滤掉、
+                    // 导致节点不可用。空侧补上游默认（Capabilities.default()），不能只写非空侧。
+                    entry["capabilities"] = [
+                        "tools": true,
+                        "input": model.inputModalities.isEmpty
+                            ? ["text", "image"]
+                            : model.inputModalities.map(\.rawValue),
+                        "output": model.outputModalities.isEmpty
+                            ? ["text"]
+                            : model.outputModalities.map(\.rawValue),
+                    ]
                 } else {
+                    var modBlock: [String: Any] = [:]
+                    if !model.inputModalities.isEmpty {
+                        modBlock["input"] = model.inputModalities.map(\.rawValue)
+                    }
+                    if !model.outputModalities.isEmpty {
+                        modBlock["output"] = model.outputModalities.map(\.rawValue)
+                    }
                     entry["modalities"] = modBlock
                 }
             }
