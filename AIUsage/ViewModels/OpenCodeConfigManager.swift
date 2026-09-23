@@ -920,16 +920,18 @@ final class OpenCodeConfigManager {
     private func restore(forceExternalChanges: Bool) throws {
         guard let active = session else {
             // v2 凭据在 opencode.db，不在文件事务内，停用中途失败需回滚到停用前快照。
+            // 凭证清理、配置读取/写入/删除全部置于同一 do/catch：任一步失败都恢复凭证快照。
             let credentialSnapshot = authStore.snapshotManagedCredentials()
-            guard authStore.removeManagedCredentials() else {
-                throw OpenCodeConfigError.failedToRestore
-            }
-            guard let root = try? readConfigObjectIfExists() else { return }
-            let stripped = stripManagedEntries(from: root)
-            let meaningfulKeys = stripped.keys.filter { $0 != "$schema" }
             do {
+                guard authStore.removeManagedCredentials() else {
+                    throw OpenCodeConfigError.failedToRestore
+                }
+                // 配置文件不存在 → 无受管块可剥，视为正常完成；读取/解析失败 → 抛错走回滚。
+                guard let root = try readConfigObjectIfExists() else { return }
+                let stripped = stripManagedEntries(from: root)
+                let meaningfulKeys = stripped.keys.filter { $0 != "$schema" }
                 if meaningfulKeys.isEmpty {
-                    try? fileManager.removeItem(atPath: configPath)
+                    try fileManager.removeItem(atPath: configPath)
                 } else {
                     try writeCleanRoot(stripped, toPath: configPath)
                 }
