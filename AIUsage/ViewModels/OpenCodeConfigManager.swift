@@ -919,16 +919,25 @@ final class OpenCodeConfigManager {
 
     private func restore(forceExternalChanges: Bool) throws {
         guard let active = session else {
+            // v2 凭据在 opencode.db，不在文件事务内，停用中途失败需回滚到停用前快照。
+            let credentialSnapshot = authStore.snapshotManagedCredentials()
             guard authStore.removeManagedCredentials() else {
                 throw OpenCodeConfigError.failedToRestore
             }
             guard let root = try? readConfigObjectIfExists() else { return }
             let stripped = stripManagedEntries(from: root)
             let meaningfulKeys = stripped.keys.filter { $0 != "$schema" }
-            if meaningfulKeys.isEmpty {
-                try? fileManager.removeItem(atPath: configPath)
-            } else {
-                try writeCleanRoot(stripped, toPath: configPath)
+            do {
+                if meaningfulKeys.isEmpty {
+                    try? fileManager.removeItem(atPath: configPath)
+                } else {
+                    try writeCleanRoot(stripped, toPath: configPath)
+                }
+            } catch {
+                if openCodeSchema == .v2 {
+                    _ = authStore.syncManagedCredentials(credentialSnapshot)
+                }
+                throw error
             }
             return
         }
@@ -965,6 +974,8 @@ final class OpenCodeConfigManager {
         guard let backupPath = active.backupPath, active.originalExists else {
             throw OpenCodeConfigError.failedToRestore
         }
+        // v2 凭据在 opencode.db，不在 withFileTransaction 的文件快照内，还原中途失败需回滚到还原前快照。
+        let credentialSnapshot = authStore.snapshotManagedCredentials()
         do {
             let data = try Data(contentsOf: URL(fileURLWithPath: backupPath))
             try withFileTransaction(paths: [active.targetPath] + authStore.transactionPaths + [sessionManifestPath, backupPath]) {
@@ -985,15 +996,21 @@ final class OpenCodeConfigManager {
             }
             session = nil
             openCodeConfigLog.info("OpenCode config restored from takeover session")
-        } catch let error as OpenCodeConfigError {
-            throw error
         } catch {
+            if openCodeSchema == .v2 {
+                _ = authStore.syncManagedCredentials(credentialSnapshot)
+            }
+            if let configError = error as? OpenCodeConfigError {
+                throw configError
+            }
             openCodeConfigLog.error("Failed to restore OpenCode config: \(String(describing: error), privacy: .public)")
             throw OpenCodeConfigError.failedToRestore
         }
     }
 
     private func finishManagedOnlyRestore(_ active: OpenCodeTakeoverSession) throws {
+        // v2 凭据在 opencode.db，不在 withFileTransaction 的文件快照内，还原中途失败需回滚到还原前快照。
+        let credentialSnapshot = authStore.snapshotManagedCredentials()
         do {
             try withFileTransaction(paths: [active.targetPath] + authStore.transactionPaths + [sessionManifestPath]) {
                 if let root = try readConfigObjectIfExists() {
@@ -1013,6 +1030,9 @@ final class OpenCodeConfigManager {
             session = nil
             openCodeConfigLog.info("OpenCode managed-only config restored")
         } catch {
+            if openCodeSchema == .v2 {
+                _ = authStore.syncManagedCredentials(credentialSnapshot)
+            }
             session = active
             throw OpenCodeConfigError.failedToRestore
         }

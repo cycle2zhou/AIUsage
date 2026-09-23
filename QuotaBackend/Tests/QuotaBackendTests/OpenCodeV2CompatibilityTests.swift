@@ -1,3 +1,5 @@
+import Foundation
+import SQLite3
 import XCTest
 @testable import QuotaBackend
 
@@ -223,5 +225,77 @@ final class OpenCodeMCPServerInventoryTests: XCTestCase {
         var names = Set<String>()
         makeInventory().addServerKeys(from: config, into: &names)
         XCTAssertEqual(names, ["github"])
+    }
+}
+
+// MARK: v2 凭据快照/恢复（停用路径回滚下沉到 storage 层后的 db 集成测试）
+
+final class OpenCodeCredentialSnapshotTests: XCTestCase {
+    private func makeStorage(home: URL, xdg: URL) throws -> OpenCodeV2Storage {
+        let dbDir = xdg.appendingPathComponent("opencode", isDirectory: true)
+        try FileManager.default.createDirectory(at: dbDir, withIntermediateDirectories: true)
+        let dbPath = dbDir.appendingPathComponent("opencode.db").path
+        try executeSQL(
+            """
+            CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT NOT NULL, value TEXT NOT NULL, active INTEGER, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL);
+            INSERT INTO credential VALUES ('c1', 'aiusage-a', 'default', '{"type":"key","key":"keyA"}', 1, 1, 1);
+            INSERT INTO credential VALUES ('c2', 'aiusage-b', 'default', '{"type":"key","key":"keyB"}', 1, 1, 1);
+            INSERT INTO credential VALUES ('c3', 'alibaba', 'default', '{"type":"key","key":"other"}', 1, 1, 1);
+            """,
+            databasePath: dbPath
+        )
+        return OpenCodeV2Storage(homeDirectory: home.path, environment: ["XDG_DATA_HOME": xdg.path])
+    }
+
+    func testSnapshotCredentialsFiltersByPredicate() throws {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let xdg = home.appendingPathComponent("xdg", isDirectory: true)
+        let storage = try makeStorage(home: home, xdg: xdg)
+
+        let snapshot = storage.snapshotCredentials(matching: { $0.hasPrefix("aiusage") })
+        XCTAssertEqual(snapshot, ["aiusage-a": "keyA", "aiusage-b": "keyB"])
+    }
+
+    func testRestoreCredentialsRestoresManagedAndKeepsOthers() throws {
+        let home = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let xdg = home.appendingPathComponent("xdg", isDirectory: true)
+        let storage = try makeStorage(home: home, xdg: xdg)
+
+        // 停用前快照受管凭据。
+        let snapshot = storage.snapshotCredentials(matching: { $0.hasPrefix("aiusage") })
+
+        // 模拟停用：清空受管凭据，非受管保留。
+        XCTAssertTrue(storage.restoreCredentials([:], matching: { $0.hasPrefix("aiusage") }))
+        XCTAssertEqual(storage.loadAllCredentials(), ["alibaba": "other"])
+
+        // 后续文件操作失败：写回快照，受管凭据恢复，非受管不受影响。
+        XCTAssertTrue(storage.restoreCredentials(snapshot, matching: { $0.hasPrefix("aiusage") }))
+        XCTAssertEqual(
+            storage.loadAllCredentials(),
+            ["aiusage-a": "keyA", "aiusage-b": "keyB", "alibaba": "other"]
+        )
+    }
+
+    // MARK: - Helpers
+
+    private func temporaryDirectory() -> URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("aiusage-opencode-credential-tests-\(UUID())", isDirectory: true)
+    }
+
+    private func executeSQL(_ sql: String, databasePath: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(databasePath, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, nil) == SQLITE_OK else {
+            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "open failed"
+            sqlite3_close(db)
+            throw ProviderError("db_open_failed", message)
+        }
+        defer { sqlite3_close(db) }
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
+            let message = String(cString: sqlite3_errmsg(db))
+            throw ProviderError("db_exec_failed", message)
+        }
     }
 }
