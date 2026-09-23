@@ -96,6 +96,31 @@ public protocol OpenCodeStorage: Sendable {
     var credentialFilePaths: [String] { get }
 }
 
+// MARK: - 凭证快照/恢复
+
+public extension OpenCodeStorage {
+    /// 快照匹配 `predicate` 的凭据（providerID → key），供激活/停用事务失败时回滚。
+    /// v2 凭据在 opencode.db 内、不在文件事务保护范围，操作前快照、失败后据此恢复。
+    func snapshotCredentials(matching predicate: (String) -> Bool) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: loadAllCredentials().filter { predicate($0.key) })
+    }
+
+    /// 让匹配 `predicate` 的凭据恰好等于 `snapshot`：删除其余匹配项、写回快照，非匹配项保留。
+    /// 返回是否全部成功；任一失败也继续处理剩余项并最终返回 false。
+    @discardableResult
+    func restoreCredentials(_ snapshot: [String: String], matching predicate: (String) -> Bool) -> Bool {
+        let existing = loadAllCredentials()
+        var allSucceeded = true
+        for providerId in existing.keys where predicate(providerId) {
+            if !deleteCredential(providerID: providerId) { allSucceeded = false }
+        }
+        for (providerId, apiKey) in snapshot where !apiKey.isEmpty {
+            if !upsertCredential(providerID: providerId, key: apiKey) { allSucceeded = false }
+        }
+        return allSucceeded
+    }
+}
+
 // MARK: - 路由
 
 /// 按本机 opencode 版本返回对应 reader。探测失败回退 v1（唯一正式版）。

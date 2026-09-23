@@ -38,22 +38,11 @@ final class OpenCodeAuthStore {
     /// 返回是否全部写入成功——失败时调用方回退到把 key 内联进配置。
     @discardableResult
     func syncManagedCredentials(_ credentials: [String: String]) -> Bool {
-        let existing = storage.loadAllCredentials()
-        var allSucceeded = true
-        for providerId in existing.keys where OpenCodeConfigManager.isManagedProviderKey(providerId) {
-            if !storage.deleteCredential(providerID: providerId) {
-                allSucceeded = false
-            }
-        }
-        for (providerId, apiKey) in credentials where !apiKey.isEmpty {
-            if !storage.upsertCredential(providerID: providerId, key: apiKey) {
-                allSucceeded = false
-            }
-        }
-        if !allSucceeded {
+        let ok = storage.restoreCredentials(credentials, matching: OpenCodeConfigManager.isManagedProviderKey)
+        if !ok {
             openCodeAuthLog.error("Failed to sync managed credentials")
         }
-        return allSucceeded
+        return ok
     }
 
     /// 清掉全部受管凭据（停用节点时调用）。
@@ -62,12 +51,10 @@ final class OpenCodeAuthStore {
         syncManagedCredentials([:])
     }
 
-    /// 受管凭据快照（providerID → key，仅 aiusage*），供激活事务失败时回滚。
+    /// 受管凭据快照（providerID → key，仅 aiusage*），供激活/停用事务失败时回滚。
     /// v1 凭据在 auth.json（已被文件事务 transactionPaths 保护），v2 凭据在 opencode.db
-    /// 不受文件事务保护，激活失败后需据此手动恢复。
+    /// 不受文件事务保护，失败后需据此手动恢复。
     func snapshotManagedCredentials() -> [String: String] {
-        Dictionary(uniqueKeysWithValues: storage.loadAllCredentials().filter {
-            OpenCodeConfigManager.isManagedProviderKey($0.key)
-        })
+        storage.snapshotCredentials(matching: OpenCodeConfigManager.isManagedProviderKey)
     }
 }
